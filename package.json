@@ -2,11 +2,16 @@
   "private": true,
   "name": "@audora/monorepo",
   "packageManager": "pnpm@10.29.1",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "turbo dev",
     "dev:expo": "turbo dev --filter=\"{./apps/expo}...\"",
     "dev:web": "turbo dev --filter=\"{./apps/web}...\"",
     "dev:backend": "turbo dev --filter=\"{./packages/backend}...\"",
+    "dev:local:web": "pnpm --dir apps/web dev",
+    "dev:local:backend": "pnpm --dir packages/backend dev:local",
     "dev:full-web": "turbo dev --filter=\"{./apps/web}...\" --filter=\"{./packages/backend}...\"",
     "dev:full-expo": "turbo dev --filter=\"{./apps/expo}...\" --filter=\"{./packages/backend}...\"",
     "lint": "turbo lint",

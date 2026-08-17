@@ -11,7 +11,12 @@ import { createSpeechmaticsJWT } from "@speechmatics/auth";
 export const generateJWT = action({
   args: {},
   returns: v.string(),
-  handler: async () => {
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
     const apiKey = process.env.SPEECHMATICS_API_KEY;
 
     if (!apiKey) {
@@ -21,7 +26,7 @@ export const generateJWT = action({
     const jwt = await createSpeechmaticsJWT({
       type: "rt",
       apiKey,
-      ttl: 24 * 60 * 60, // 1 day - adjust as needed
+      ttl: 5 * 60,
     });
 
     return jwt;

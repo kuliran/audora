@@ -9,11 +9,7 @@ import Markdown from "react-markdown";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { useAudioPlaybackOptional } from "~/hooks/use-audio-playback";
-
-const CONVEX_SITE_URL = import.meta.env.VITE_CONVEX_URL!.replace(
-  /.cloud$/,
-  ".site"
-);
+import { CONVEX_SITE_URL } from "~/lib/convex-site-url";
 
 interface Message {
   id: string;

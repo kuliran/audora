@@ -1,8 +1,38 @@
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 const GENERAL_THREAD_KEY = "general";
+
+type ChatCtx = QueryCtx | MutationCtx;
+
+async function requireCurrentUser(ctx: ChatCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Not authenticated");
+  }
+
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.subject))
+    .unique();
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  return user;
+}
+
+function isConversationParticipant(
+  conversation: Doc<"conversations">,
+  userId: Id<"users">
+) {
+  return (
+    conversation.initiatorUserId === userId ||
+    conversation.scannerUserId === userId
+  );
+}
 
 function isGeneralThreadKey(threadKey: string) {
   return threadKey === GENERAL_THREAD_KEY || threadKey.startsWith(`${GENERAL_THREAD_KEY}:`);
@@ -72,6 +102,61 @@ function parseConversationIdsFromThreadKey(threadKey: string) {
   return [];
 }
 
+function normalizeConversationIds(
+  ctx: ChatCtx,
+  rawIds: string[]
+): Id<"conversations">[] | null {
+  const ids: Id<"conversations">[] = [];
+  for (const rawId of rawIds) {
+    const id = ctx.db.normalizeId("conversations", rawId);
+    if (!id) {
+      return null;
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function canAccessConversations(
+  ctx: ChatCtx,
+  userId: Id<"users">,
+  conversationIds: Id<"conversations">[]
+) {
+  const conversations = await Promise.all(
+    conversationIds.map((conversationId) => ctx.db.get(conversationId))
+  );
+  return conversations.every(
+    (conversation) =>
+      conversation !== null && isConversationParticipant(conversation, userId)
+  );
+}
+
+function selectedConversationIds(
+  ctx: ChatCtx,
+  args: {
+    conversationId?: Id<"conversations">;
+    linkedConversationIds?: Id<"conversations">[];
+    threadKey?: string;
+  },
+  resolvedThreadKey: string
+) {
+  const fromThread = normalizeConversationIds(
+    ctx,
+    parseConversationIdsFromThreadKey(resolvedThreadKey)
+  );
+  if (!fromThread) {
+    throw new Error("Invalid chat thread");
+  }
+
+  return Array.from(
+    new Set([
+      ...(args.conversationId ? [args.conversationId] : []),
+      ...(args.linkedConversationIds ?? []),
+      ...fromThread,
+    ])
+  );
+}
+
 function getSingleConversationId(threadKey: string) {
   const ids = parseConversationIdsFromThreadKey(threadKey);
   return ids.length === 1 ? (ids[0] as Id<"conversations">) : undefined;
@@ -115,26 +200,17 @@ export const getMessages = query({
     threadKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return [];
-    }
-
-    // Get the user
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.subject))
-      .unique();
-
-    if (!user) {
-      return [];
-    }
+    const user = await requireCurrentUser(ctx);
 
     const threadKey = buildThreadKey({
       conversationId: args.conversationId,
       linkedConversationIds: args.linkedConversationIds,
       threadKey: args.threadKey,
     });
+    const conversationIds = selectedConversationIds(ctx, args, threadKey);
+    if (!(await canAccessConversations(ctx, user._id, conversationIds))) {
+      throw new Error("Chat thread not found or not authorized");
+    }
 
     let messages = await ctx.db
       .query("chatMessages")
@@ -160,19 +236,7 @@ export const getMessages = query({
 export const listThreads = query({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return [];
-    }
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.subject))
-      .unique();
-
-    if (!user) {
-      return [];
-    }
+    const user = await requireCurrentUser(ctx);
 
     const messages = await ctx.db
       .query("chatMessages")
@@ -190,9 +254,25 @@ export const listThreads = query({
       }
     }
 
+    const authorizedLatestByThread = new Map<string, (typeof messages)[number]>();
+    for (const [threadKey, message] of latestByThread) {
+      const conversationIds = normalizeConversationIds(
+        ctx,
+        parseConversationIdsFromThreadKey(threadKey)
+      );
+      if (
+        conversationIds &&
+        (await canAccessConversations(ctx, user._id, conversationIds))
+      ) {
+        authorizedLatestByThread.set(threadKey, message);
+      }
+    }
+
     const conversationIds = Array.from(
       new Set(
-        Array.from(latestByThread.keys()).flatMap((threadKey) => parseConversationIdsFromThreadKey(threadKey))
+        Array.from(authorizedLatestByThread.keys()).flatMap((threadKey) =>
+          parseConversationIdsFromThreadKey(threadKey)
+        )
       )
     ) as Id<"conversations">[];
 
@@ -203,7 +283,7 @@ export const listThreads = query({
         .map((conversation) => [String(conversation._id), conversation])
     );
 
-    return Array.from(latestByThread.entries())
+    return Array.from(authorizedLatestByThread.entries())
       .map(([threadKey, message]) => {
         const linkedConversationIds = parseConversationIdsFromThreadKey(threadKey) as Id<"conversations">[];
 
@@ -229,47 +309,21 @@ export const saveMessage = mutation({
     content: v.string(),
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Not authenticated");
-    }
-
-    // Get the user
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.subject))
-      .unique();
-
-    if (!user) {
-      throw new Error("User not found");
-    }
+    const user = await requireCurrentUser(ctx);
 
     const singleConversationId =
       args.conversationId ??
       (args.linkedConversationIds?.length === 1 ? args.linkedConversationIds[0] : undefined);
-
-    if (singleConversationId) {
-      const conversation = await ctx.db.get(singleConversationId);
-      if (!conversation) {
-        throw new Error("Conversation not found");
-      }
-    }
-
-    if (args.linkedConversationIds && args.linkedConversationIds.length > 1) {
-      const linkedConversations = await Promise.all(
-        args.linkedConversationIds.map((conversationId) => ctx.db.get(conversationId))
-      );
-
-      if (linkedConversations.some((conversation) => !conversation)) {
-        throw new Error("One or more linked conversations were not found");
-      }
-    }
 
     const threadKey = buildThreadKey({
       conversationId: singleConversationId,
       linkedConversationIds: args.linkedConversationIds,
       threadKey: args.threadKey,
     });
+    const conversationIds = selectedConversationIds(ctx, args, threadKey);
+    if (!(await canAccessConversations(ctx, user._id, conversationIds))) {
+      throw new Error("Chat thread not found or not authorized");
+    }
 
     // Save the message
     const messageId = await ctx.db.insert("chatMessages", {

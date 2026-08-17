@@ -6,17 +6,23 @@ import { generateObject } from "ai";
 import { v } from "convex/values";
 import OpenAI from "openai";
 import { z } from "zod";
+import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { action } from "./_generated/server";
 
-// Initialize clients
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY not configured");
+  }
+
+  return new OpenAI({ apiKey });
+}
 
 const zepClient = new ZepClient({
   apiKey: process.env.ZEP_API_KEY!,
 });
+const ZEP_ENABLED = Boolean(process.env.ZEP_API_KEY?.trim());
 
 const GRAPH_ID = process.env.ZEP_GRAPH_ID || "all_users_htn";
 
@@ -33,6 +39,13 @@ export const transcribeAudio = action({
     summary: v.string(),
   }),
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
+    await ctx.runQuery(api.files.verifyFileExists, { storageId: args.storageId });
+
     // Get audio file from storage
     const audioBlob = await ctx.storage.get(args.storageId);
     if (!audioBlob) {
@@ -48,6 +61,7 @@ export const transcribeAudio = action({
 
     // Transcribe with OpenAI Whisper
     console.log("Transcribing audio with Whisper...");
+    const openai = getOpenAIClient();
     const transcription = await openai.audio.transcriptions.create({
       file: file,
       model: "whisper-1",
@@ -106,7 +120,7 @@ Provide:
     });
 
     // Process with Zep if available
-    if (parsedResult.transcript && parsedResult.facts) {
+    if (ZEP_ENABLED && parsedResult.transcript && parsedResult.facts) {
       try {
         await processWithZep(
           parsedResult,

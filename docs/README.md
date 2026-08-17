@@ -48,6 +48,8 @@ Quick setup guides for specific platforms:
   - API keys setup
   - Running the app
 
+- **[Local setup with Codex + Parakeet](./LOCAL_CODEX_SETUP.md)** - Hardened loopback backend, local JWT, Codex coaching bridge, and macOS transcription
+
 ---
 
 ## 🐛 Troubleshooting & Help

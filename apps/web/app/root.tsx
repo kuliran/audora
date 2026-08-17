@@ -28,7 +28,8 @@ function ThemedToaster() {
 export async function loader(args: Route.LoaderArgs) {
   return rootAuthLoader(args);
 }
-export const links: Route.LinksFunction = () => [
+
+const externalLinks = [
   // DNS prefetch for external services
   { rel: "dns-prefetch", href: "https://fonts.googleapis.com" },
   { rel: "dns-prefetch", href: "https://fonts.gstatic.com" },
@@ -48,7 +49,9 @@ export const links: Route.LinksFunction = () => [
     rel: "stylesheet",
     href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
   },
+] satisfies ReturnType<Route.LinksFunction>;
 
+const localLinks = [
   // Preload critical assets
   {
     rel: "preload",
@@ -69,7 +72,12 @@ export const links: Route.LinksFunction = () => [
     type: "image/png",
     href: "/favicon.png",
   },
-];
+] satisfies ReturnType<Route.LinksFunction>;
+
+export const links: Route.LinksFunction = () =>
+  import.meta.env.VITE_LOCAL_AUTH === "true"
+    ? localLinks
+    : [...externalLinks, ...localLinks];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (

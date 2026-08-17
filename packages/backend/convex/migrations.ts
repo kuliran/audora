@@ -1,11 +1,11 @@
-import { mutation } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 
 /**
  * Migration: Add userId to conversationFacts and remove speaker field
  * This migrates old conversationFacts records to the new schema
  */
-export const migrateConversationFacts = mutation({
+export const migrateConversationFacts = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Get all conversation facts
@@ -60,7 +60,7 @@ export const migrateConversationFacts = mutation({
  * Migration: Replace speaker field with userId in transcriptTurns
  * This migrates old transcriptTurns records to use userId instead of speaker name
  */
-export const migrateTranscriptTurnsToUserId = mutation({
+export const migrateTranscriptTurnsToUserId = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Get all transcript turns
@@ -156,7 +156,7 @@ export const migrateTranscriptTurnsToUserId = mutation({
  * Migration: Consolidate conversationFacts entries
  * Fixes the bug where each fact was saved in a separate row instead of all facts in one row per user
  */
-export const consolidateConversationFacts = mutation({
+export const consolidateConversationFacts = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Get all conversations
@@ -230,7 +230,7 @@ export const consolidateConversationFacts = mutation({
  * Migration: Remove duplicate transcript turns
  * Fixes duplicate transcript entries caused by calling processRealtimeTranscript twice
  */
-export const removeDuplicateTranscriptTurns = mutation({
+export const removeDuplicateTranscriptTurns = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Get all conversations

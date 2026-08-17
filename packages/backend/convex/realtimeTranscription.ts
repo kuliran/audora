@@ -12,6 +12,7 @@ import { action } from "./_generated/server";
 const zepClient = new ZepClient({
   apiKey: process.env.ZEP_API_KEY || "",
 });
+const ZEP_ENABLED = Boolean(process.env.ZEP_API_KEY?.trim());
 
 const GRAPH_ID = process.env.ZEP_GRAPH_ID || "all_users_htn";
 
@@ -47,6 +48,11 @@ export const processRealtimeTranscript = action({
     summary: v.string(),
   }),
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
     console.log("Processing real-time transcript with speaker labels...");
     console.log(`Received ${args.transcriptTurns.length} conversation turns`);
 
@@ -174,7 +180,7 @@ Provide:
     }
 
     // Process with Zep if available
-    if (transcript && aiAnalysis.S1_facts && aiAnalysis.S2_facts) {
+    if (ZEP_ENABLED && transcript && aiAnalysis.S1_facts && aiAnalysis.S2_facts) {
       try {
         await processWithZep(
           { transcript, facts: aiAnalysis.S1_facts, summary: aiAnalysis.summary },

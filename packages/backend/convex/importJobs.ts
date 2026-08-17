@@ -75,7 +75,7 @@ async function getCurrentUserOrThrow(ctx: any) {
 
   const user = await ctx.db
     .query("users")
-    .withIndex("by_token", (q: any) => q.eq("tokenIdentifier", identity.tokenIdentifier.split("|")[1]))
+    .withIndex("by_token", (q: any) => q.eq("tokenIdentifier", identity.subject))
     .unique();
 
   if (!user) {
@@ -180,7 +180,7 @@ export const get = query({
 
     const user = await ctx.db
       .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier.split("|")[1]))
+      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.subject))
       .unique();
     if (!user) {
       return null;
@@ -401,7 +401,7 @@ export const processNextChunk = internalAction({
     }
 
     try {
-      const chunkResult: any = await ctx.runAction(anyApi.speechmaticsBatch.transcribeChunkOnly, {
+      const chunkResult: any = await ctx.runAction(anyApi.speechmaticsBatch.transcribeChunkOnlyInternal, {
         storageId,
       });
 
@@ -487,14 +487,10 @@ export const finalizeJob = internalAction({
       allS2Facts = dedupeStrings(allS2Facts);
       const combinedSummary = combinedSummaryFromChunks(allSummaries);
 
-      const conversation: any = await ctx.runQuery(anyApi.conversations.get, {
-        id: job.conversationId,
-      });
-      if (!conversation) {
-        throw new Error("Conversation not found");
-      }
-
-      const currentUserId = conversation.initiatorUserId as Id<"users">;
+      // Scheduled internal actions do not retain the creator's auth identity.
+      // The job captured the authenticated initiator at creation time, and the
+      // internal save below independently verifies that the conversation exists.
+      const currentUserId = job.initiatorUserId as Id<"users">;
       const selectedFriendId =
         job.participantMode === "contact" ? (job.friendId as Id<"users"> | undefined) : undefined;
       if (job.participantMode === "contact" && !selectedFriendId) {

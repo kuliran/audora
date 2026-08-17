@@ -18,12 +18,12 @@ export async function loader(args: Route.LoaderArgs) {
     try {
       const convex = new ConvexHttpClient(process.env.VITE_CONVEX_URL!);
       
-      // Get the conversation to find the initiator
-      const conversation = await convex.query(api.conversations.get, { 
-        id: id as Id<"conversations"> 
+      // The invite code is the public capability for the pre-auth join flow.
+      const conversation = await convex.query(api.conversations.getByInviteCode, {
+        inviteCode: conversationCode,
       });
 
-      if (conversation) {
+      if (conversation && conversation._id === id) {
         // Get the initiator's user to find their platform invite code
         const initiator = await convex.query(api.users.get, { 
           id: conversation.initiatorUserId 
@@ -61,14 +61,14 @@ export default function JoinPage() {
   const navigate = useNavigate();
   const claimScanner = useMutation(api.conversations.claimScanner);
   const conversation = useQuery(
-    api.conversations.get,
-    id ? { id: id as Id<"conversations"> } : "skip"
+    api.conversations.getByInviteCode,
+    code ? { inviteCode: code } : "skip"
   );
   const [claimed, setClaimed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isSignedIn && id && code && conversation && !claimed) {
+    if (isSignedIn && id && code && conversation?._id === id && !claimed) {
       handleClaim();
     }
   }, [isSignedIn, id, code, conversation, claimed]);

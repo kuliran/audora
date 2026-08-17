@@ -4,6 +4,9 @@
   "description": "",
   "scripts": {
     "dev": "convex dev",
+    "dev:local": "node ./scripts/convex-local-loopback.cjs dev --local --local-cloud-port 3210 --local-site-port 3211 --local-backend-version precompiled-2026-08-10-c0cb7ae",
+    "dev:local:node24": "npx --yes node@24 ./scripts/convex-local-loopback.cjs dev --local --local-cloud-port 3210 --local-site-port 3211 --local-backend-version precompiled-2026-08-10-c0cb7ae",
+    "secure:local-state": "node ./scripts/secure-local-state.cjs",
     "setup": "convex dev --until-success"
   },
   "author": "",

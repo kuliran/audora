@@ -1,7 +1,8 @@
 import { v } from "convex/values";
-import { action, mutation, query } from "./_generated/server";
+import { action, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { VapiClient } from "@vapi-ai/server-sdk";
 
 // Helper to get current user
@@ -35,6 +36,52 @@ async function getCurrentUser(ctx: QueryCtx) {
   return null;
 }
 
+async function canAccessContact(
+  ctx: QueryCtx,
+  currentUserId: Id<"users">,
+  contactUserId: Id<"users">
+) {
+  if (currentUserId === contactUserId) {
+    return true;
+  }
+
+  const [asInitiator, asScanner] = await Promise.all([
+    ctx.db
+      .query("conversations")
+      .withIndex("by_initiator", (q) =>
+        q.eq("initiatorUserId", currentUserId)
+      )
+      .collect(),
+    ctx.db
+      .query("conversations")
+      .withIndex("by_scanner", (q) => q.eq("scannerUserId", currentUserId))
+      .collect(),
+  ]);
+
+  return [...asInitiator, ...asScanner].some(
+    (conversation) =>
+      conversation.initiatorUserId === contactUserId ||
+      conversation.scannerUserId === contactUserId
+  );
+}
+
+export const getAuthorizedContact = internalQuery({
+  args: { contactUserId: v.id("users") },
+  handler: async (ctx, args) => {
+    const currentUser = await getCurrentUser(ctx);
+    if (!currentUser) {
+      return null;
+    }
+
+    if (!(await canAccessContact(ctx, currentUser._id, args.contactUserId))) {
+      return null;
+    }
+
+    const contact = await ctx.db.get(args.contactUserId);
+    return contact ? { contact, isSelf: contact._id === currentUser._id } : null;
+  },
+});
+
 // Update user's phone number
 export const updatePhoneNumber = mutation({
   args: {
@@ -42,6 +89,15 @@ export const updatePhoneNumber = mutation({
     phoneNumber: v.string(),
   },
   handler: async (ctx, args) => {
+    const currentUser = await getCurrentUser(ctx);
+    if (!currentUser) {
+      throw new Error("Not authenticated");
+    }
+
+    if (currentUser._id !== args.userId) {
+      throw new Error("Not authorized to update this phone number");
+    }
+
     // Validate phone number format (US/Canada: +1XXXXXXXXXX)
     const phoneRegex = /^\+1\d{10}$/;
     if (!phoneRegex.test(args.phoneNumber)) {
@@ -60,6 +116,15 @@ export const updatePhoneNumber = mutation({
 export const getPhoneNumber = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    const currentUser = await getCurrentUser(ctx);
+    if (!currentUser) {
+      throw new Error("Not authenticated");
+    }
+
+    if (!(await canAccessContact(ctx, currentUser._id, args.userId))) {
+      throw new Error("Not authorized to view this phone number");
+    }
+
     const user = await ctx.db.get(args.userId);
     return user?.phoneNumber ?? null;
   },
@@ -76,12 +141,20 @@ export const initiateCall = action({
     callId: string;
     phoneNumber: string;
   }> => {
-    // Get contact details
-    const contact = await ctx.runQuery(api.users.get, { id: args.contactUserId });
-
-    if (!contact) {
-      throw new Error("Contact not found");
+    if (!(await ctx.auth.getUserIdentity())) {
+      throw new Error("Not authenticated");
     }
+
+    const authorizedContact = await ctx.runQuery(
+      internal.vapi.getAuthorizedContact,
+      { contactUserId: args.contactUserId }
+    );
+
+    if (!authorizedContact) {
+      throw new Error("Contact not found or not authorized");
+    }
+
+    const { contact, isSelf } = authorizedContact;
 
     // Use provided phone number or get from contact
     const phoneNumber: string | null | undefined = args.phoneNumber || contact.phoneNumber;
@@ -96,8 +169,13 @@ export const initiateCall = action({
       throw new Error("Invalid phone number format. Must be +1XXXXXXXXXX");
     }
 
-    // If phone number was provided and different from stored, update it
+    // A caller may not replace another account's phone number merely by
+    // supplying it to this action. Contacts must manage their own number.
     if (args.phoneNumber && args.phoneNumber !== contact.phoneNumber) {
+      if (!isSelf) {
+        throw new Error("The contact must add their own phone number before calling");
+      }
+
       await ctx.runMutation(api.users.updatePhoneNumber, {
         userId: args.contactUserId,
         phoneNumber: args.phoneNumber,

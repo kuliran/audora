@@ -4,15 +4,17 @@ import { openai as openaiProvider } from "@ai-sdk/openai";
 import { ZepClient } from "@getzep/zep-cloud";
 import { BatchClient } from "@speechmatics/batch-client";
 import { generateObject } from "ai";
+import { anyApi } from "convex/server";
 import { v } from "convex/values";
 import { z } from "zod";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 
 const zepClient = new ZepClient({
   apiKey: process.env.ZEP_API_KEY || "",
 });
+const ZEP_ENABLED = Boolean(process.env.ZEP_API_KEY?.trim());
 
 const GRAPH_ID = process.env.ZEP_GRAPH_ID || "mru-2025";
 const MAX_SPEECHMATICS_ATTEMPTS = 3;
@@ -59,7 +61,7 @@ function isRetryableSpeechmaticsError(error: any): boolean {
  * Transcribe audio file using Speechmatics Batch API (chunk only - no DB save)
  * Use this for processing individual chunks
  */
-export const transcribeChunkOnly = action({
+export const transcribeChunkOnlyInternal = internalAction({
   args: {
     storageId: v.id("_storage"),
   },
@@ -82,6 +84,10 @@ export const transcribeChunkOnly = action({
     summary: v.string(),
   }),
   handler: async (ctx, args) => {
+    if (!process.env.SPEECHMATICS_API_KEY?.trim()) {
+      throw new Error("SPEECHMATICS_API_KEY not configured");
+    }
+
     console.log("Starting batch transcription for chunk (no DB save)");
 
     // Get audio file from storage
@@ -242,6 +248,42 @@ export const transcribeChunkOnly = action({
   },
 });
 
+// Public callers must prove both authentication and access to the stored file.
+// Background import jobs call the internal action only after the job mutation has
+// associated the same storage ID with its authenticated creator.
+export const transcribeChunkOnly = action({
+  args: {
+    storageId: v.id("_storage"),
+  },
+  returns: v.object({
+    transcript: v.array(v.object({
+      speaker: v.string(),
+      text: v.string(),
+      startTime: v.number(),
+      endTime: v.number(),
+      words: v.array(v.object({
+        word: v.string(),
+        startTime: v.number(),
+        endTime: v.number(),
+        wordId: v.string(),
+      })),
+    })),
+    durationSeconds: v.number(),
+    S1_facts: v.array(v.string()),
+    S2_facts: v.array(v.string()),
+    summary: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
+    await ctx.runQuery(api.files.verifyFileExists, { storageId: args.storageId });
+    return await ctx.runAction(anyApi.speechmaticsBatch.transcribeChunkOnlyInternal, args);
+  },
+});
+
 /**
  * Transcribe audio file using Speechmatics Batch API
  * This provides more accurate transcription than real-time, processed after recording ends
@@ -262,6 +304,17 @@ export const batchTranscribe = action({
     summary: v.string(),
   }),
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
+    await ctx.runQuery(api.conversations.get, { id: args.conversationId });
+    await ctx.runQuery(api.files.verifyFileExists, { storageId: args.storageId });
+    if (!process.env.SPEECHMATICS_API_KEY?.trim()) {
+      throw new Error("SPEECHMATICS_API_KEY not configured");
+    }
+
     console.log("Starting batch transcription for conversation:", args.conversationId);
 
     // Step 1: Get audio file from storage
@@ -448,7 +501,7 @@ Provide:
     console.log("AI analysis complete:", aiAnalysis);
 
     // Step 8: Process with Zep if available
-    if (transcript && aiAnalysis.S1_facts && aiAnalysis.S2_facts) {
+    if (ZEP_ENABLED && transcript && aiAnalysis.S1_facts && aiAnalysis.S2_facts) {
       try {
         await processWithZep(
           { transcript, facts: aiAnalysis.S1_facts, summary: aiAnalysis.summary },

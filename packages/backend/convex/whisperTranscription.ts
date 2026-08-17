@@ -3,11 +3,16 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import OpenAI from "openai";
+import { api } from "./_generated/api";
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY not configured");
+  }
+
+  return new OpenAI({ apiKey });
+}
 
 /**
  * Transcribe audio using OpenAI Whisper for solo conversations
@@ -21,6 +26,13 @@ export const transcribeSoloAudio = action({
     text: v.string(),
   }),
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Not authenticated");
+    }
+
+    await ctx.runQuery(api.files.verifyFileExists, { storageId: args.storageId });
+
     console.log("Transcribing solo audio with Whisper...");
 
     // Get audio file from storage
@@ -60,6 +72,7 @@ export const transcribeSoloAudio = action({
     console.log(`Transcribing audio file: ${filename} (${mimeType})`);
 
     // Transcribe with OpenAI Whisper
+    const openai = getOpenAIClient();
     const transcription = await openai.audio.transcriptions.create({
       file: file,
       model: "whisper-1",

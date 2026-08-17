@@ -28,6 +28,9 @@ const authRoutes = [
 ];
 
 export default [
+  route(".well-known/jwks.json", "routes/local-jwks.ts"),
+  route("api/local-auth-token", "routes/local-auth-token.ts"),
+  route("api/local-codex", "routes/local-codex.ts"),
   index("routes/home.tsx"),
   route("playground", "routes/playground.tsx"),
   route("waitlist", "routes/waitlist.tsx"),

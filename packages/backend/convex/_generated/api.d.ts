@@ -15,6 +15,7 @@ import type * as files from "../files.js";
 import type * as homepage from "../homepage.js";
 import type * as http from "../http.js";
 import type * as importJobs from "../importJobs.js";
+import type * as localCodex from "../localCodex.js";
 import type * as migrations from "../migrations.js";
 import type * as mobileImport from "../mobileImport.js";
 import type * as network from "../network.js";
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   homepage: typeof homepage;
   http: typeof http;
   importJobs: typeof importJobs;
+  localCodex: typeof localCodex;
   migrations: typeof migrations;
   mobileImport: typeof mobileImport;
   network: typeof network;

@@ -1,8 +1,17 @@
 import { Polar } from "@polar-sh/sdk";
 import { v } from "convex/values";
 import { Webhook, WebhookVerificationError } from "standardwebhooks";
-import { api } from "./_generated/api";
-import { action, httpAction, mutation, query } from "./_generated/server";
+import { api, internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
+import { action, httpAction, internalMutation, query } from "./_generated/server";
+
+const emptyPlans = {
+  items: [],
+  pagination: {
+    currentPage: 1,
+    totalPages: 0,
+  },
+};
 
 const createCheckout = async ({
   customerEmail,
@@ -15,16 +24,8 @@ const createCheckout = async ({
   successUrl: string;
   metadata?: Record<string, string>;
 }) => {
-  // Mock checkout when POLAR_ACCESS_TOKEN is not provided
   if (!process.env.POLAR_ACCESS_TOKEN) {
-    return {
-      id: `mock_checkout_${Date.now()}`,
-      url: `${successUrl}?mock=true&priceId=${productPriceId}`,
-      customerEmail,
-      amount: 1000,
-      currency: "USD",
-      metadata,
-    };
+    throw new Error("Payments are not configured");
   }
 
   const polar = new Polar({
@@ -74,58 +75,8 @@ const createCheckout = async ({
 
 export const getAvailablePlansQuery = query({
   handler: async (ctx) => {
-    // Mock plans when POLAR_ACCESS_TOKEN is not provided
     if (!process.env.POLAR_ACCESS_TOKEN) {
-      return {
-        items: [
-          {
-            id: "mock-product-1",
-            name: "Starter",
-            description: "Perfect for individuals getting started",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-1",
-                amount: 1000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-          {
-            id: "mock-product-2",
-            name: "Pro",
-            description: "For professionals who need more",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-2",
-                amount: 2000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-          {
-            id: "mock-product-3",
-            name: "Enterprise",
-            description: "For teams and organizations",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-3",
-                amount: 5000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-        ],
-        pagination: {
-          currentPage: 1,
-          totalPages: 1,
-        },
-      };
+      return emptyPlans;
     }
 
     const polar = new Polar({
@@ -161,58 +112,8 @@ export const getAvailablePlansQuery = query({
 
 export const getAvailablePlans = action({
   handler: async (ctx) => {
-    // Mock plans when POLAR_ACCESS_TOKEN is not provided
     if (!process.env.POLAR_ACCESS_TOKEN) {
-      return {
-        items: [
-          {
-            id: "mock-product-1",
-            name: "Starter",
-            description: "Perfect for individuals getting started",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-1",
-                amount: 1000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-          {
-            id: "mock-product-2",
-            name: "Pro",
-            description: "For professionals who need more",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-2",
-                amount: 2000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-          {
-            id: "mock-product-3",
-            name: "Enterprise",
-            description: "For teams and organizations",
-            isRecurring: true,
-            prices: [
-              {
-                id: "mock-price-3",
-                amount: 5000,
-                currency: "USD",
-                interval: "month",
-              },
-            ],
-          },
-        ],
-        pagination: {
-          currentPage: 1,
-          totalPages: 1,
-        },
-      };
+      return emptyPlans;
     }
 
     const polar = new Polar({
@@ -270,8 +171,16 @@ export const createCheckoutSession = action({
       }
     }
 
+    if (!user.email) {
+      throw new Error("An email address is required to create a checkout");
+    }
+
+    if (!process.env.FRONTEND_URL) {
+      throw new Error("FRONTEND_URL is not configured");
+    }
+
     const checkout = await createCheckout({
-      customerEmail: user.email!,
+      customerEmail: user.email,
       productPriceId: args.priceId,
       successUrl: `${process.env.FRONTEND_URL}/success`,
       metadata: {
@@ -287,32 +196,21 @@ export const checkUserSubscriptionStatus = query({
   args: {
     userId: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
-    // MOCK DATA: Always return active subscription for testing
-    return { hasActiveSubscription: true };
-
-    /* Original implementation - uncomment when ready for production
-    let tokenIdentifier: string;
-
-    if (args.userId) {
-      // Use provided userId directly as tokenIdentifier (they are the same)
-      tokenIdentifier = args.userId;
-    } else {
-      // Fall back to auth context
-      const identity = await ctx.auth.getUserIdentity();
-      if (!identity) {
-        return { hasActiveSubscription: false };
-      }
-      tokenIdentifier = identity.subject;
+  handler: async (ctx, _args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return { hasActiveSubscription: false };
     }
 
     const user = await ctx.db
       .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", tokenIdentifier))
+      .withIndex("by_token", (q) =>
+        q.eq("tokenIdentifier", identity.subject)
+      )
       .unique();
 
     if (!user) {
-      return { hasActiveSubscription: true };
+      return { hasActiveSubscription: false };
     }
 
     const subscription = await ctx.db
@@ -322,7 +220,6 @@ export const checkUserSubscriptionStatus = query({
 
     const hasActiveSubscription = subscription?.status === "active";
     return { hasActiveSubscription };
-    */
   },
 });
 
@@ -330,23 +227,20 @@ export const checkUserSubscriptionStatusByClerkId = query({
   args: {
     clerkUserId: v.string(),
   },
-  handler: async (ctx, args) => {
-    // Find user by Clerk user ID (this assumes the tokenIdentifier contains the Clerk user ID)
-    // In Clerk, the subject is typically in the format "user_xxxxx" where xxxxx is the Clerk user ID
-    const tokenIdentifier = `user_${args.clerkUserId}`;
-
-    let user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", tokenIdentifier))
-      .unique();
-
-    // If not found with user_ prefix, try the raw userId
-    if (!user) {
-      user = await ctx.db
-        .query("users")
-        .withIndex("by_token", (q) => q.eq("tokenIdentifier", args.clerkUserId))
-        .unique();
+  handler: async (ctx, _args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return { hasActiveSubscription: false };
     }
+
+    // The legacy argument is retained for client compatibility, but callers
+    // may only inspect the subscription attached to their authenticated token.
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_token", (q) =>
+        q.eq("tokenIdentifier", identity.subject)
+      )
+      .unique();
 
     if (!user) {
       return { hasActiveSubscription: false };
@@ -364,25 +258,6 @@ export const checkUserSubscriptionStatusByClerkId = query({
 
 export const fetchUserSubscription = query({
   handler: async (ctx) => {
-    // MOCK DATA: Return a mock active subscription for testing
-    return {
-      _id: "mock_subscription_id" as any,
-      _creationTime: Date.now(),
-      userId: "mock_user",
-      polarId: "mock_polar_sub_123",
-      polarPriceId: "mock_price_123",
-      currency: "usd",
-      interval: "month",
-      status: "active",
-      currentPeriodStart: Date.now(),
-      currentPeriodEnd: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days from now
-      cancelAtPeriodEnd: false,
-      amount: 2900, // $29.00
-      startedAt: Date.now(),
-      customerId: "mock_customer_123",
-    };
-
-    /* Original implementation - uncomment when ready for production
     const identity = await ctx.auth.getUserIdentity();
 
     if (!identity) {
@@ -404,22 +279,32 @@ export const fetchUserSubscription = query({
       .first();
 
     return subscription;
-    */
   },
 });
 
-export const handleWebhookEvent = mutation({
+export const handleWebhookEvent = internalMutation({
   args: {
     body: v.any(),
+    eventId: v.string(),
   },
   handler: async (ctx, args) => {
     // Extract event type from webhook payload
     const eventType = args.body.type;
 
+    const existingEvent = await ctx.db
+      .query("webhookEvents")
+      .withIndex("polarEventId", (q) =>
+        q.eq("polarEventId", args.eventId)
+      )
+      .first();
+    if (existingEvent) {
+      return;
+    }
+
     // Store webhook event
     await ctx.db.insert("webhookEvents", {
       type: eventType,
-      polarEventId: args.body.data.id,
+      polarEventId: args.eventId,
       createdAt: args.body.data.created_at,
       modifiedAt: args.body.data.modified_at || args.body.data.created_at,
       data: args.body.data,
@@ -599,10 +484,15 @@ export const paymentWebhook = httpAction(async (ctx, request) => {
     validateEvent(rawBody, headers, process.env.POLAR_WEBHOOK_SECRET);
 
     const body = JSON.parse(rawBody);
+    const eventId = headers["webhook-id"];
+    if (!eventId) {
+      throw new Error("Missing webhook event ID");
+    }
 
     // track events and based on events store data
-    await ctx.runMutation(api.subscriptions.handleWebhookEvent, {
+    await ctx.runMutation(internal.subscriptions.handleWebhookEvent, {
       body,
+      eventId,
     });
 
     return new Response(JSON.stringify({ message: "Webhook received!" }), {
@@ -634,16 +524,26 @@ export const paymentWebhook = httpAction(async (ctx, request) => {
 });
 
 export const createCustomerPortalUrl = action({
-  handler: async (ctx, args: { customerId: string }) => {
-    // Mock customer portal URL when POLAR_ACCESS_TOKEN is not provided
+  args: { customerId: v.string() },
+  handler: async (ctx, args) => {
+    if (!(await ctx.auth.getUserIdentity())) {
+      throw new Error("Not authenticated");
+    }
+
+    const subscription: Doc<"subscriptions"> | null = await ctx.runQuery(
+      api.subscriptions.fetchUserSubscription,
+      {}
+    );
+    if (!subscription || subscription.customerId !== args.customerId) {
+      throw new Error("Subscription not found or not authorized");
+    }
+
     if (!process.env.POLAR_ACCESS_TOKEN) {
-      return {
-        url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/dashboard?mock_portal=true&customerId=${args.customerId}`,
-      };
+      throw new Error("Payments are not configured");
     }
 
     const polar = new Polar({
-      server: "sandbox",
+      server: (process.env.POLAR_SERVER as "sandbox" | "production") || "sandbox",
       accessToken: process.env.POLAR_ACCESS_TOKEN,
     });
 

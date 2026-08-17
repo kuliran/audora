@@ -46,6 +46,33 @@ function inferChunkDurationSeconds(chunkResult: any): number {
     typeof chunkResult?.durationSeconds === "number" ? chunkResult.durationSeconds : 0;
   return Math.max(inferredDuration, reportedDuration, 0);
 }
+
+async function withConversationChunkAccess<T>(
+  ctx: any,
+  conversationId: Id<"conversations">,
+  storageId: Id<"_storage">,
+  playbackStorageId: Id<"_storage">,
+  operation: () => Promise<T>
+): Promise<T> {
+  const usesTemporaryStorageId = storageId !== playbackStorageId;
+  if (usesTemporaryStorageId) {
+    await ctx.runMutation(api.conversations.saveAudioStorageId, {
+      conversationId,
+      storageId,
+    });
+  }
+
+  try {
+    return await operation();
+  } finally {
+    if (usesTemporaryStorageId) {
+      await ctx.runMutation(api.conversations.saveAudioStorageId, {
+        conversationId,
+        storageId: playbackStorageId,
+      });
+    }
+  }
+}
 /**
  * Process imported audio file from mobile app
  * This is a simplified version that processes a single audio file
@@ -234,6 +261,10 @@ export const processImportedAudioInChunks = action({
   handler: async (ctx, args): Promise<{ conversationId: Id<"conversations">; success: boolean }> => {
     console.log(`Starting mobile audio import with ${args.storageIds.length} chunks`);
 
+    if (args.storageIds.length === 0) {
+      throw new Error("At least one audio chunk is required");
+    }
+
     // Step 1: Get current user
     const currentUser = await ctx.runQuery(api.users.getCurrentUser);
     if (!currentUser) {
@@ -292,9 +323,13 @@ export const processImportedAudioInChunks = action({
 
         try {
           // Transcribe chunk only (no DB save)
-          const chunkResult: any = await ctx.runAction(api.speechmaticsBatch.transcribeChunkOnly, {
+          const chunkResult: any = await withConversationChunkAccess(
+            ctx,
+            conversation.id,
             storageId,
-          });
+            args.storageIds[0],
+            () => ctx.runAction(api.speechmaticsBatch.transcribeChunkOnly, { storageId })
+          );
 
           const timedTurns = offsetChunkTurns(chunkResult, cumulativeOffsetSeconds);
           allTranscripts.push(...timedTurns);
@@ -360,9 +395,13 @@ export const processImportedAudioInChunks = action({
         console.log(`Processing solo chunk ${chunkNum}/${args.storageIds.length}...`);
 
         try {
-          const chunkResult: any = await ctx.runAction(api.speechmaticsBatch.transcribeChunkOnly, {
+          const chunkResult: any = await withConversationChunkAccess(
+            ctx,
+            conversation.id,
             storageId,
-          });
+            args.storageIds[0],
+            () => ctx.runAction(api.speechmaticsBatch.transcribeChunkOnly, { storageId })
+          );
           const timedTurns = offsetChunkTurns(chunkResult, cumulativeOffsetSeconds);
           allTranscripts.push(...timedTurns);
           allSummaries.push(chunkResult.summary);
@@ -370,9 +409,13 @@ export const processImportedAudioInChunks = action({
           console.log(`Chunk ${chunkNum} transcribed with Speechmatics`);
         } catch (error: any) {
           console.error(`Speechmatics failed for chunk ${chunkNum}, falling back to Whisper:`, error);
-          const whisperResult = await ctx.runAction(api.whisperTranscription.transcribeSoloAudio, {
+          const whisperResult = await withConversationChunkAccess(
+            ctx,
+            conversation.id,
             storageId,
-          });
+            args.storageIds[0],
+            () => ctx.runAction(api.whisperTranscription.transcribeSoloAudio, { storageId })
+          );
           const estimatedDurationSeconds = Math.max(
             whisperResult.text.split(/\s+/).filter(Boolean).length * 0.35,
             5

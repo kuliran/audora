@@ -1,6 +1,54 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+
+async function getCurrentUser(ctx: QueryCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    return null;
+  }
+
+  const identifiers = new Set<string>([identity.subject]);
+  const separator = identity.tokenIdentifier.indexOf("|");
+  if (separator >= 0 && separator < identity.tokenIdentifier.length - 1) {
+    identifiers.add(identity.tokenIdentifier.slice(separator + 1));
+  }
+
+  for (const identifier of identifiers) {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identifier))
+      .unique();
+    if (user) {
+      return user;
+    }
+  }
+
+  return null;
+}
+
+async function getUserConversations(ctx: QueryCtx, userId: Id<"users">) {
+  const [asInitiator, asScanner] = await Promise.all([
+    ctx.db
+      .query("conversations")
+      .withIndex("by_initiator", (q) => q.eq("initiatorUserId", userId))
+      .collect(),
+    ctx.db
+      .query("conversations")
+      .withIndex("by_scanner", (q) => q.eq("scannerUserId", userId))
+      .collect(),
+  ]);
+
+  return Array.from(
+    new Map(
+      [...asInitiator, ...asScanner].map((conversation) => [
+        conversation._id,
+        conversation,
+      ])
+    ).values()
+  );
+}
 
 // Extract keywords from facts (strict - only meaningful topics)
 function extractKeywords(facts: string[]): string[] {
@@ -170,41 +218,27 @@ export const getUserNetwork = query({
     })),
   }),
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return { nodes: [], links: [] };
-    }
-
-    // Get current user
-    const currentUser = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) =>
-        q.eq("tokenIdentifier", identity.tokenIdentifier.split("|")[1])
-      )
-      .unique();
+    const currentUser = await getCurrentUser(ctx);
 
     if (!currentUser) {
       return { nodes: [], links: [] };
     }
 
-    // Get ALL conversations in the system (not just current user's)
-    const allConversations = await ctx.db
-      .query("conversations")
-      .filter((q) => q.neq(q.field("status"), "pending"))
-      .collect();
+    const userConversations = (await getUserConversations(ctx, currentUser._id)).filter(
+      (conversation) => conversation.status !== "pending"
+    );
+    const accessibleConversationIds = new Set(
+      userConversations.map((conversation) => String(conversation._id))
+    );
 
-    console.log("Total conversations found:", allConversations.length);
-
-    // Get ALL unique users from ALL conversations
+    // Only include people who participated in the current user's conversations.
     const userIds = new Set<Id<"users">>();
     userIds.add(currentUser._id);
 
-    allConversations.forEach(conv => {
+    userConversations.forEach(conv => {
       if (conv.initiatorUserId) userIds.add(conv.initiatorUserId);
       if (conv.scannerUserId) userIds.add(conv.scannerUserId);
     });
-
-    console.log("Total unique users found:", userIds.size);
 
     // Build user nodes with their facts/keywords
     const userNodesMap = new Map<string, UserNode>();
@@ -219,16 +253,10 @@ export const getUserNetwork = query({
         .withIndex("by_user", (q) => q.eq("userId", userId))
         .collect();
 
-      // Extract all facts
-      const allFacts = userFacts.flatMap(cf => cf.facts);
+      const allFacts = userFacts
+        .filter((fact) => accessibleConversationIds.has(String(fact.conversationId)))
+        .flatMap((fact) => fact.facts);
       const keywords = extractKeywords(allFacts);
-
-      console.log(`User ${user.name || user.email}:`, {
-        factsCount: allFacts.length,
-        keywordsCount: keywords.length,
-        facts: allFacts,
-        keywords: keywords.slice(0, 20) // First 20 keywords
-      });
 
       userNodesMap.set(userId, {
         id: userId,
@@ -245,8 +273,6 @@ export const getUserNetwork = query({
     const keywordToCanonical = new Map<string, string>(); // Map similar keywords to canonical form
     const connections: Connection[] = [];
     const userList = Array.from(userNodesMap.values());
-
-    console.log("Creating keyword nodes from", userList.length, "users");
 
     // First pass: deduplicate similar keywords
     const allKeywords = new Set<string>();
@@ -313,9 +339,6 @@ export const getUserNetwork = query({
     // Filter connections to only include shared keywords
     const sharedConnections = connections.filter(conn => sharedKeywordIds.has(conn.target));
 
-    console.log("Created", sharedKeywordNodes.length, "shared keyword nodes (filtered from", keywordNodeMap.size, "total)");
-    console.log("Created", sharedConnections.length, "connections (filtered from", connections.length, "total)");
-
     // Combine all nodes
     const allNodes: (UserNode | KeywordNode)[] = [...userList, ...sharedKeywordNodes];
 
@@ -338,59 +361,48 @@ export const getConnectionDetails = query({
     currentUserFacts: v.array(v.string()),
   }),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
+    const currentUser = await getCurrentUser(ctx);
+    if (!currentUser) {
       throw new Error("Not authenticated");
     }
 
-    const currentUser = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) =>
-        q.eq("tokenIdentifier", identity.tokenIdentifier.split("|")[1])
-      )
-      .unique();
-
-    if (!currentUser) {
-      throw new Error("User not found");
+    const sharedConversations = (await getUserConversations(ctx, currentUser._id)).filter(
+      (conversation) =>
+        conversation.initiatorUserId === args.otherUserId ||
+        conversation.scannerUserId === args.otherUserId
+    );
+    if (sharedConversations.length === 0) {
+      throw new Error("Connection not found or not authorized");
     }
 
-    // Get facts for current user
-    const currentUserFacts = await ctx.db
-      .query("conversationFacts")
-      .withIndex("by_user", (q) => q.eq("userId", currentUser._id))
-      .collect();
+    const sharedFacts = (
+      await Promise.all(
+        sharedConversations.map((conversation) =>
+          ctx.db
+            .query("conversationFacts")
+            .withIndex("by_conversation", (q) =>
+              q.eq("conversationId", conversation._id)
+            )
+            .collect()
+        )
+      )
+    ).flat();
 
-    const currentFacts = currentUserFacts.flatMap(cf => cf.facts);
-
-    // Get facts for other user
-    const otherUserFacts = await ctx.db
-      .query("conversationFacts")
-      .withIndex("by_user", (q) => q.eq("userId", args.otherUserId))
-      .collect();
-
-    const otherFacts = otherUserFacts.flatMap(cf => cf.facts);
+    const currentFacts = sharedFacts
+      .filter((fact) => fact.userId === currentUser._id)
+      .flatMap((fact) => fact.facts);
+    const otherFacts = sharedFacts
+      .filter((fact) => fact.userId === args.otherUserId)
+      .flatMap((fact) => fact.facts);
 
     // Extract keywords
     const currentKeywords = extractKeywords(currentFacts);
     const otherKeywords = extractKeywords(otherFacts);
     const commonKeywords = findCommonKeywords(currentKeywords, otherKeywords);
 
-    // Count shared conversations
-    const conversationsAsInitiator = await ctx.db
-      .query("conversations")
-      .withIndex("by_initiator", (q) => q.eq("initiatorUserId", currentUser._id))
-      .filter((q) => q.eq(q.field("scannerUserId"), args.otherUserId))
-      .collect();
-
-    const conversationsAsScanner = await ctx.db
-      .query("conversations")
-      .withIndex("by_scanner", (q) => q.eq("scannerUserId", currentUser._id))
-      .filter((q) => q.eq(q.field("initiatorUserId"), args.otherUserId))
-      .collect();
-
     return {
       commonKeywords,
-      sharedConversations: conversationsAsInitiator.length + conversationsAsScanner.length,
+      sharedConversations: sharedConversations.length,
       otherUserFacts: otherFacts,
       currentUserFacts: currentFacts,
     };

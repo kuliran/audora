@@ -1,6 +1,5 @@
 import { api } from "@audora/backend/convex/_generated/api";
-import { useAuth } from "@clerk/react-router";
-import { useMutation } from "convex/react";
+import { useConvexAuth, useMutation } from "convex/react";
 import { useEffect, useRef } from "react";
 
 function getCookie(name: string): string | null {
@@ -18,13 +17,13 @@ function getCookie(name: string): string | null {
  * This component should be mounted once at the root level of the application.
  */
 export function UserSync() {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated, isLoading } = useConvexAuth();
   const upsertUser = useMutation(api.users.upsertUser);
   const syncedRef = useRef(false);
 
   useEffect(() => {
     // Only sync when signed in and haven't synced yet
-    if (isSignedIn && !syncedRef.current) {
+    if (!isLoading && isAuthenticated && !syncedRef.current) {
       const invitedByCode = getCookie("invite_code");
       console.log("UserSync: invitedByCode from cookie:", invitedByCode);
       upsertUser({ invitedByCode: invitedByCode || undefined })
@@ -40,10 +39,10 @@ export function UserSync() {
     }
 
     // Reset sync flag when user signs out
-    if (!isSignedIn) {
+    if (!isLoading && !isAuthenticated) {
       syncedRef.current = false;
     }
-  }, [isSignedIn, upsertUser]);
+  }, [isAuthenticated, isLoading, upsertUser]);
 
   // This component doesn't render anything
   return null;

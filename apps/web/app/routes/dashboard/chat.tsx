@@ -27,13 +27,9 @@ import {
     DialogTitle,
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
+import { CONVEX_SITE_URL } from "~/lib/convex-site-url";
 import { getConversationDisplayTitle } from "~/lib/conversation-context";
 import { cn } from "~/lib/utils";
-
-const CONVEX_SITE_URL = import.meta.env.VITE_CONVEX_URL!.replace(
-  /.cloud$/,
-  ".site"
-);
 
 const SUGGESTED_PROMPTS = [
   "Analyze my tone this week",
