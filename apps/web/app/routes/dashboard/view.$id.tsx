@@ -1,9 +1,10 @@
 import { api } from "@audora/backend/convex/_generated/api";
 import type { Id } from "@audora/backend/convex/_generated/dataModel";
-import { useQuery } from "convex/react";
-import { AlertCircle, ArrowLeft, Calendar, Clock, Loader2, MoveUpLeft, Share2, Users } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { AlertCircle, ArrowLeft, Calendar, Clock, Loader2, MoveUpLeft, Share2, Square, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import { PersonalizedFeedback } from "~/components/analytics/PersonalizedFeedback";
 import { AnalyticsPanel } from "~/components/dashboard/analytics-panel";
 import { TranscriptChatbot } from "~/components/dashboard/transcript-chatbot";
@@ -29,6 +30,10 @@ export default function ConversationDetailPage() {
   const { id } = useParams<{ id: Id<"conversations"> }>();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("analytics");
+  const [isEnding, setIsEnding] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const forceCompleteConversation = useMutation(api.conversations.forceCompleteConversation);
+  const deleteConversation = useMutation(api.conversations.deleteConversation);
 
   // Fetch conversation data
   const conversation = useQuery(
@@ -58,6 +63,38 @@ export default function ConversationDetailPage() {
     conversation?.scannerUserId ? { id: conversation.scannerUserId } : "skip"
   );
   const currentUser = useQuery(api.users.getCurrentUser);
+
+  const handleEndConversation = async () => {
+    if (!id || isEnding) return;
+    try {
+      setIsEnding(true);
+      await forceCompleteConversation({ conversationId: id });
+      toast.success("Conversation ended");
+    } catch (error) {
+      console.error("Failed to end conversation:", error);
+      toast.error("Could not end the conversation");
+    } finally {
+      setIsEnding(false);
+    }
+  };
+
+  const handleDeleteConversation = async () => {
+    if (!id || isDeleting) return;
+    if (!window.confirm("Permanently delete this conversation, transcript, audio, and coaching data?")) {
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await deleteConversation({ conversationId: id });
+      toast.success("Conversation deleted");
+      navigate("/dashboard");
+    } catch (error) {
+      console.error("Failed to delete conversation:", error);
+      toast.error("Could not delete the conversation");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Loading state - only wait for conversation data initially
   if (conversation === undefined) {
@@ -117,6 +154,40 @@ export default function ConversationDetailPage() {
             </button>
 
             <div className="flex items-center gap-3">
+              {currentUser?._id === conversation.initiatorUserId ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleEndConversation()}
+                    disabled={isEnding || isDeleting}
+                  >
+                    {isEnding ? (
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                    ) : (
+                      <Square className="mr-2 size-4" />
+                    )}
+                    End
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Delete conversation"
+                    title="Delete conversation"
+                    onClick={() => void handleDeleteConversation()}
+                    disabled={isEnding || isDeleting}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    {isDeleting ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-4" />
+                    )}
+                  </Button>
+                </>
+              ) : null}
               <div className="text-right">
                 <h1 className="text-sm font-semibold text-foreground">
                   {conversationTitle}
@@ -229,6 +300,24 @@ export default function ConversationDetailPage() {
             
             {/* Right section - Actions */}
             <div className="flex items-center gap-2 shrink-0">
+              {currentUser?._id === conversation.initiatorUserId ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Delete conversation"
+                  title="Delete conversation"
+                  onClick={() => void handleDeleteConversation()}
+                  disabled={isDeleting}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  {isDeleting ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4" />
+                  )}
+                </Button>
+              ) : null}
               <ExportDialog 
                 conversationId={id as Id<"conversations">}
                 trigger={

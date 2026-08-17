@@ -87,45 +87,6 @@ git submodule update --init apps/macos
 
 Do not use the root `pnpm dev:web` command for this setup. Its dependency filter invokes the backend's ordinary `convex dev` script instead of the hardened local launcher.
 
-## Configure the web process
-
-Create the ignored web environment file if it does not already exist:
-
-```bash
-test -e apps/web/.env.local || cp apps/web/.env.example apps/web/.env.local
-chmod 600 apps/web/.env.local
-```
-
-Generate a bridge token without printing it to the terminal, then paste it into the file when editing it:
-
-```bash
-openssl rand -hex 32 | pbcopy
-```
-
-Set `apps/web/.env.local` to the following values. Replace the token placeholder with the 64 hexadecimal characters now on the clipboard:
-
-```dotenv
-VITE_LOCAL_AUTH=true
-VITE_CONVEX_URL=http://127.0.0.1:3210
-VITE_CONVEX_SITE_URL=http://127.0.0.1:3211
-VITE_CLERK_PUBLISHABLE_KEY=
-VITE_CLERK_FRONTEND_API_URL=
-CLERK_SECRET_KEY=
-
-AUDORA_CODEX_BRIDGE_TOKEN=<paste-random-64-hex-character-token>
-
-# Optional when the web process cannot find codex on PATH:
-AUDORA_CODEX_BIN=/absolute/path/printed/by/command-v-codex
-```
-
-The bridge searches `PATH` for `codex`. Determine the optional absolute value with the following command; never use a shell alias or relative path:
-
-```bash
-command -v codex
-```
-
-Keep `OPENAI_API_KEY`, `SPEECHMATICS_API_KEY`, `ZEP_API_KEY`, VAPI, Notion, Clerk, and other cloud-provider credentials unset for the minimum-traffic configuration.
-
 ## Repair older local Convex state once
 
 The hardened launcher now applies `umask 077`, so newly created deployment credentials, SQLite data, uploaded files, and transcripts are private to the current OS account. Older anonymous Convex state may have been created with broader permissions.
@@ -137,83 +98,43 @@ cd packages/backend
 pnpm secure:local-state
 ```
 
-## Launch in order
+## Launch all local services
 
-Use separate terminals and keep the first two processes running.
-
-### 1. Start the web app, JWT issuer, and Codex bridge
-
-From the repository root:
+Run one command from the repository root and leave it running:
 
 ```bash
-cd apps/web
-pnpm dev
-```
-
-The Vite configuration forces `127.0.0.1:5173`, requires both Convex URLs to be exact loopback HTTP URLs, and refuses the local-auth configuration for a normal production build. Start this process first so the Convex backend can reach the JWKS endpoint.
-
-### 2. Start hardened local Convex
-
-In a second terminal:
-
-```bash
-cd packages/backend
 pnpm dev:local
 ```
 
-This pins the local backend build and ports, forces the Rust backend to `127.0.0.1`, disables its beacon, redacts server logs from clients, restricts the local dashboard, and creates new state with private permissions.
+The launcher uses Node 24, generates a fresh bridge token without printing it, starts the web/JWT/Codex process first, starts hardened local Convex, installs the matching token in that local deployment, and waits until the functions are ready. On the first run, choose **Start without an account (run Convex locally)** and accept creation of the anonymous deployment if prompted.
 
-On first use, Convex creates an anonymous local deployment and writes its generated selector to the ignored `packages/backend/.env.local`. Do not copy that selector or local admin material between machines. The expected local URL is:
+The ready message includes these local endpoints:
 
-```dotenv
-CONVEX_URL=http://127.0.0.1:3210
-```
+- application: `http://127.0.0.1:5173/dashboard`
+- Convex API: `http://127.0.0.1:3210`
+- Convex HTTP actions: `http://127.0.0.1:3211`
 
-If this command reports an unsupported Node version, switch to installed Node 24. `pnpm dev:local:node24` is a fallback, but it uses `npx` and can create additional npm traffic.
-
-### 3. Select Codex inside the running Convex deployment
-
-In a third terminal, set the non-secret runtime values on the local deployment:
+The launcher pins the Codex bridge to `gpt-5.5` with `medium` reasoning effort by default. You may override either value for one launch:
 
 ```bash
-cd packages/backend
-printf '%s' 'codex' | pnpm exec convex env set AUDORA_AI_PROVIDER
-printf '%s' 'http://127.0.0.1:5173/api/local-codex' | pnpm exec convex env set AUDORA_CODEX_BRIDGE_URL
-printf '%s' 'http://127.0.0.1:5173' | pnpm exec convex env set FRONTEND_URL
+AUDORA_CODEX_MODEL=gpt-5.5 \
+AUDORA_CODEX_REASONING_EFFORT=low \
+pnpm dev:local
 ```
 
-Copy the web bridge token into Convex without putting it in shell history or command-line arguments. If it is still on the clipboard from the earlier setup step:
+Supported effort values are `low`, `medium`, `high`, and `xhigh`. The bridge permits at most **5 admitted Codex requests in any rolling 5-minute window**, in addition to allowing only one request at a time. A sixth request receives HTTP `429` plus a retry delay. Restarting the web process resets this development-only in-memory window.
 
-```bash
-pbpaste | pnpm exec convex env set AUDORA_CODEX_BRIDGE_TOKEN
-```
+This command fixes the services required by the Mac app's “Local services are not ready” screen. Keep it running while Audora is open and press `Ctrl+C` once to stop every child service.
 
-The values required by the bridge are therefore exactly:
-
-```dotenv
-AUDORA_AI_PROVIDER=codex
-AUDORA_CODEX_BRIDGE_URL=http://127.0.0.1:5173/api/local-codex
-FRONTEND_URL=http://127.0.0.1:5173
-AUDORA_CODEX_BRIDGE_TOKEN=<same-random-token-as-apps/web/.env.local>
-```
-
-Convex function environment values are stored in the local deployment; adding these only to `packages/backend/.env.local` is not sufficient.
-
-Verify the non-secret values without reading the bridge token:
-
-```bash
-pnpm exec convex env get AUDORA_AI_PROVIDER
-pnpm exec convex env get AUDORA_CODEX_BRIDGE_URL
-pnpm exec convex env get FRONTEND_URL
-```
-
-Expected output is `codex` followed by the two exact `127.0.0.1` URLs above.
+The Vite configuration forces `127.0.0.1:5173`. The hardened Convex launcher pins the backend build and ports, binds to `127.0.0.1`, disables its beacon, redacts server logs from clients, restricts the local dashboard, and creates new state with private permissions. Keep `OPENAI_API_KEY`, `SPEECHMATICS_API_KEY`, `ZEP_API_KEY`, VAPI, Notion, Clerk, and other cloud-provider credentials unset.
 
 Open the authenticated application route directly; the repository root route is only the public landing page:
 
 ```bash
 open http://127.0.0.1:5173/dashboard
 ```
+
+In local mode, the browser recorder is intentionally disabled: a browser cannot run the native CoreML Parakeet pipeline. Record from the Audora Mac app; the browser dashboard receives the locally synced conversation and provides chat, End, and Delete controls. This avoids the old failure mode where **Tap to record** silently attempted cloud Speechmatics without a key.
 
 ## Build and run the Mac app
 
@@ -286,7 +207,7 @@ The bridge:
 - requires `codex login status` to report ChatGPT authentication;
 - launches `codex exec` in an empty temporary workspace with an ephemeral session, a filesystem profile limited to runtime files and that workspace, shell/app/browser/plugin and web-search tools disabled, user rules/config/skill and environment context omitted, bounded input/output, and a two-minute timeout;
 - validates structured output for analysis tasks and deletes its temporary task directory afterward;
-- permits only one active request at a time.
+- permits only one active request at a time and at most five admitted requests per rolling five-minute window.
 
 Its process boundary follows the official [non-interactive Codex](https://learn.chatgpt.com/docs/non-interactive-mode) and [sandboxing](https://learn.chatgpt.com/docs/sandboxing) guidance, with host-facing tools additionally disabled because transcript content is untrusted.
 
@@ -334,31 +255,7 @@ Ports `5173`, `3210`, and `3211` must appear on `127.0.0.1`, never `*`, `0.0.0.0
 
 ### Optional non-sensitive Codex smoke test
 
-This sends only a fixed test sentence to OpenAI and consumes a small amount of Codex allowance:
-
-```bash
-(
-  export AUDORA_CODEX_BRIDGE_TOKEN="$(sed -n 's/^AUDORA_CODEX_BRIDGE_TOKEN=//p' apps/web/.env.local)"
-  node --input-type=module <<'NODE'
-const response = await fetch("http://127.0.0.1:5173/api/local-codex", {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${process.env.AUDORA_CODEX_BRIDGE_TOKEN}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    task: "chat",
-    prompt: "Reply with AUDORA_CODEX_OK and nothing else.",
-  }),
-});
-const body = await response.json();
-console.log(response.status, body);
-if (!response.ok) process.exitCode = 1;
-NODE
-)
-```
-
-Expected status: `200`, with `AUDORA_CODEX_OK` in the result.
+Open the dashboard Chat page and ask it to reply with `AUDORA_CODEX_OK`. This sends that test prompt and the app's assembled conversation context to OpenAI and consumes one of the five rolling-window requests. A successful reply verifies the complete browser → local Convex → protected loopback bridge → ChatGPT-authenticated Codex path.
 
 ### End-to-end Mac check
 

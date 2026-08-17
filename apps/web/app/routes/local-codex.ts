@@ -3,6 +3,8 @@ import { LOCAL_AUTH_ISSUER } from "~/lib/local-auth/config";
 
 const MAX_REQUEST_BODY_BYTES = 512 * 1024;
 const MIN_BRIDGE_TOKEN_BYTES = 32;
+const REQUEST_LIMIT = 5;
+const REQUEST_WINDOW_MS = 5 * 60 * 1000;
 const ALLOWED_TASKS = new Set([
   "chat",
   "weak_word_suggestions",
@@ -11,15 +13,34 @@ const ALLOWED_TASKS = new Set([
 ]);
 
 let activeRequests = 0;
+const admittedRequestTimes: number[] = [];
 
-function jsonResponse(body: unknown, status: number) {
+function jsonResponse(body: unknown, status: number, headers?: HeadersInit) {
   return Response.json(body, {
     status,
     headers: {
       "Cache-Control": "no-store, max-age=0",
       Pragma: "no-cache",
+      ...headers,
     },
   });
+}
+
+function admitRateLimitedRequest(now = Date.now()) {
+  while (
+    admittedRequestTimes.length > 0 &&
+    admittedRequestTimes[0] <= now - REQUEST_WINDOW_MS
+  ) {
+    admittedRequestTimes.shift();
+  }
+
+  if (admittedRequestTimes.length >= REQUEST_LIMIT) {
+    const retryAfterMs = admittedRequestTimes[0] + REQUEST_WINDOW_MS - now;
+    return Math.max(1, Math.ceil(retryAfterMs / 1000));
+  }
+
+  admittedRequestTimes.push(now);
+  return null;
 }
 
 async function readBoundedBody(request: Request) {
@@ -135,6 +156,20 @@ export async function action({ request }: Route.ActionArgs) {
   }
   if (typeof prompt !== "string" || !prompt.trim()) {
     return jsonResponse({ error: "Prompt must be a non-empty string" }, 400);
+  }
+
+  const retryAfterSeconds = admitRateLimitedRequest();
+  if (retryAfterSeconds !== null) {
+    return jsonResponse(
+      {
+        error: `Codex request limit reached. Try again in ${retryAfterSeconds} seconds.`,
+        limit: REQUEST_LIMIT,
+        windowSeconds: REQUEST_WINDOW_MS / 1000,
+        retryAfterSeconds,
+      },
+      429,
+      { "Retry-After": String(retryAfterSeconds) }
+    );
   }
 
   activeRequests += 1;

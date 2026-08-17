@@ -36,7 +36,12 @@ export default defineConfig(({ command, mode }) => {
   if (localAuth) {
     // Vite does not normally copy non-VITE_ values from .env files into
     // process.env. These stay server-only and are needed by the local bridge.
-    for (const name of ["AUDORA_CODEX_BRIDGE_TOKEN", "AUDORA_CODEX_BIN"] as const) {
+    for (const name of [
+      "AUDORA_CODEX_BRIDGE_TOKEN",
+      "AUDORA_CODEX_BIN",
+      "AUDORA_CODEX_MODEL",
+      "AUDORA_CODEX_REASONING_EFFORT",
+    ] as const) {
       if (process.env[name] === undefined && env[name] !== undefined) {
         process.env[name] = env[name];
       }

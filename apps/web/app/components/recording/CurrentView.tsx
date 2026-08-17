@@ -3,7 +3,7 @@ import type { Id } from "@audora/backend/convex/_generated/dataModel";
 import { useUser } from "@clerk/react-router";
 import { RealtimeClient } from "@speechmatics/real-time-client";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { Clock, Mic, Users } from "lucide-react";
+import { Clock, Laptop, Mic, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import BubbleField from "../BubbleField";
@@ -58,6 +58,7 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
   const [duration, setDuration] = useState(0);
   const [startTime] = useState<number>(Date.now());
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [transcriptResult, setTranscriptResult] = useState<any>(null);
@@ -66,6 +67,8 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
   const [currentSentence, setCurrentSentence] = useState<string>("");
   const [displayTranscriptTurns, setDisplayTranscriptTurns] = useState<TranscriptTurn[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const isUnmountingRef = useRef(false);
   const audioChunksRef = useRef<Blob[]>([]);
   const speechmaticsClientRef = useRef<RealtimeClient | null>(null);
   const fullTranscriptRef = useRef<string>("");
@@ -80,6 +83,10 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
   const processRealtimeTranscript = useAction(api.realtimeTranscription?.processRealtimeTranscript);
   // @ts-ignore - API will be available after convex dev regenerates types
   const batchTranscribe = useAction(api.speechmaticsBatch?.batchTranscribe);
+  const forceCompleteConversation = useMutation(
+    api.conversations.forceCompleteConversation
+  );
+  const isLocalSetup = import.meta.env.VITE_LOCAL_AUTH === "true";
 
   // Check if current user is the scanner (not the initiator)
   const isScanner = currentUser && conversation && currentUser._id === conversation.scannerUserId;
@@ -92,13 +99,31 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
 
   // Auto-start recording when component mounts (only for initiator)
   useEffect(() => {
-    if (!autoStarted && currentUser && conversation && !isScanner) {
+    if (!isLocalSetup && !autoStarted && currentUser && conversation && !isScanner) {
       setAutoStarted(true);
-      setTimeout(() => {
-        startRecording();
+      const timeout = setTimeout(() => {
+        void startRecording();
       }, 500);
+      return () => clearTimeout(timeout);
     }
-  }, [autoStarted, currentUser, conversation, isScanner]);
+  }, [autoStarted, currentUser, conversation, isLocalSetup, isScanner]);
+
+  useEffect(() => {
+    isUnmountingRef.current = false;
+    return () => {
+      isUnmountingRef.current = true;
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      try {
+        speechmaticsClientRef.current?.stopRecognition();
+      } catch {
+        // The remote session may already be closed.
+      }
+    };
+  }, []);
 
   // Timer for recording duration
   useEffect(() => {
@@ -111,6 +136,13 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
   }, [startTime]);
 
   const startRecording = async () => {
+    if (isLocalSetup) {
+      toast.info("Use the Audora Mac app for on-device Parakeet recording.");
+      return;
+    }
+    if (isStarting || isRecording) return;
+
+    setIsStarting(true);
     try {
       // Initialize Speechmatics client
       const client = new RealtimeClient();
@@ -309,6 +341,7 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
         mimeType: mimeType,
       });
       setMediaRecorder(recorder);
+      mediaRecorderRef.current = recorder;
 
       // Clear previous audio chunks and transcript data
       audioChunksRef.current = [];
@@ -339,7 +372,11 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
 
         // Clean up microphone
         stream.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
         setIsRecording(false);
+
+        if (isUnmountingRef.current) return;
 
         // Process and save to Convex
         setIsProcessing(true);
@@ -410,6 +447,13 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
           console.error("Error processing transcript:", error);
           toast.error("Error processing recording. Please try again.");
         } finally {
+          try {
+            await forceCompleteConversation({
+              conversationId: conversationId as Id<"conversations">,
+            });
+          } catch (error) {
+            console.error("Failed to finalize conversation status:", error);
+          }
           setIsProcessing(false);
         }
       };
@@ -420,12 +464,17 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
     } catch (error) {
       console.error("Error starting recording:", error);
       toast.error("Unable to start recording. Please check permissions and try again.");
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    } finally {
+      setIsStarting(false);
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.stop();
+    const recorder = mediaRecorderRef.current ?? mediaRecorder;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
     }
   };
 
@@ -460,6 +509,27 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
     return <WaitingView conversationId={conversationId} />;
   }
 
+  if (isLocalSetup) {
+    return (
+      <div className="mx-auto flex w-full max-w-xl flex-col items-center gap-5 rounded-xl border border-border bg-card p-8 text-center shadow-sm">
+        <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Laptop className="size-6" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold text-foreground">Record in the Audora Mac app</h2>
+          <p className="text-sm leading-6 text-muted-foreground">
+            Browser recording uses Speechmatics and is disabled in this local setup. The Mac app
+            records and transcribes on-device with Parakeet, then saves the result to this local
+            Convex backend.
+          </p>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Use End or Delete above to clear this browser-created live conversation.
+        </p>
+      </div>
+    );
+  }
+
   console.log("realtimeTranscript", realtimeTranscript);
   console.log("currentSentence", currentSentence);
 
@@ -487,11 +557,11 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
             {/* Actual button */}
             <button
               onClick={handleRecordClick}
-              disabled={isProcessing}
+              disabled={isProcessing || isStarting}
               className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all cursor-pointer
                 ${isRecording ? "bg-primary/20 dark:bg-primary/30" : "bg-muted dark:bg-card"}
-                ${isProcessing ? "opacity-50 cursor-not-allowed" : "hover:bg-primary/30 dark:hover:bg-primary/40"}`}>
-              {isProcessing ? (
+                ${isProcessing || isStarting ? "opacity-50 cursor-not-allowed" : "hover:bg-primary/30 dark:hover:bg-primary/40"}`}>
+              {isProcessing || isStarting ? (
                 <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
               ) : isRecording ? (
                 <div className="">
@@ -522,6 +592,8 @@ export default function CurrentView({ conversationId }: CurrentViewProps) {
               style={{ fontFamily: "Simonetta, serif" }}>
               {isProcessing
                 ? "Processing..."
+                : isStarting
+                ? "Starting..."
                 : isRecording
                 ? "Recording..."
                 : "Tap to record..."}

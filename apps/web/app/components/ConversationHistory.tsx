@@ -1,8 +1,10 @@
 import { api } from "@audora/backend/convex/_generated/api";
-import { useQuery } from "convex/react";
-import { ChevronRight, Clock, Inbox } from "lucide-react";
+import type { Id } from "@audora/backend/convex/_generated/dataModel";
+import { useMutation, useQuery } from "convex/react";
+import { ChevronRight, Clock, Inbox, Loader2, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { getConversationDisplayTitle } from "~/lib/conversation-context";
@@ -20,7 +22,10 @@ export default function ConversationHistory({
 }: ConversationHistoryProps) {
   const navigate = useNavigate();
   const conversations = useQuery(api.conversations.list);
+  const currentUser = useQuery(api.users.getCurrentUser);
+  const deleteConversation = useMutation(api.conversations.deleteConversation);
   const allConversations = conversations || [];
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 6;
 
@@ -73,6 +78,25 @@ export default function ConversationHistory({
     }
 
     return parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("");
+  };
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    if (!window.confirm("Permanently delete this conversation, transcript, audio, and coaching data?")) {
+      return;
+    }
+
+    try {
+      setDeletingConversationId(conversationId);
+      await deleteConversation({
+        conversationId: conversationId as Id<"conversations">,
+      });
+      toast.success("Conversation deleted");
+    } catch (error) {
+      console.error("Failed to delete conversation:", error);
+      toast.error("Could not delete the conversation");
+    } finally {
+      setDeletingConversationId(null);
+    }
   };
 
   if (conversations === undefined) {
@@ -182,7 +206,30 @@ export default function ConversationHistory({
                       </div>
                     ) : null}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                  <div className="flex items-center gap-1">
+                    {currentUser?._id === conversation.initiatorUserId ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Delete conversation"
+                        title="Delete conversation"
+                        disabled={deletingConversationId === conversation._id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteConversation(conversation._id);
+                        }}
+                        className="size-8 text-muted-foreground hover:text-destructive"
+                      >
+                        {deletingConversationId === conversation._id ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                      </Button>
+                    ) : null}
+                    <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                  </div>
                 </div>
 
                 <h3 className="text-sm font-semibold text-foreground mb-2 line-clamp-1">

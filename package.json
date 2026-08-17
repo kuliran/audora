@@ -10,6 +10,7 @@
     "dev:expo": "turbo dev --filter=\"{./apps/expo}...\"",
     "dev:web": "turbo dev --filter=\"{./apps/web}...\"",
     "dev:backend": "turbo dev --filter=\"{./packages/backend}...\"",
+    "dev:local": "npx --yes node@24 ./scripts/dev-local.mjs",
     "dev:local:web": "pnpm --dir apps/web dev",
     "dev:local:backend": "pnpm --dir packages/backend dev:local",
     "dev:full-web": "turbo dev --filter=\"{./apps/web}...\" --filter=\"{./packages/backend}...\"",

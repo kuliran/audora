@@ -39,12 +39,26 @@ type LocalCodexResultByTask = {
   transcript_analysis: TranscriptAnalysisResult;
 };
 
+export class LocalCodexRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterSeconds?: number
+  ) {
+    super(message);
+    this.name = "LocalCodexRequestError";
+  }
+}
+
 function utf8Length(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
 
 function requireConfiguredProvider() {
-  const provider = (process.env.AUDORA_AI_PROVIDER ?? "openai").trim();
+  const isLocalDeployment = process.env.CONVEX_CLOUD_URL === LOCAL_CONVEX_CLOUD_URL;
+  const provider = (
+    process.env.AUDORA_AI_PROVIDER ?? (isLocalDeployment ? "codex" : "openai")
+  ).trim();
 
   if (provider === "" || provider === "openai") return false;
   if (provider !== "codex") {
@@ -53,16 +67,9 @@ function requireConfiguredProvider() {
     );
   }
 
-  if (process.env.CONVEX_CLOUD_URL !== LOCAL_CONVEX_CLOUD_URL) {
+  if (!isLocalDeployment) {
     throw new Error(
       `AUDORA_AI_PROVIDER=codex is restricted to the exact local Convex deployment ${LOCAL_CONVEX_CLOUD_URL}`
-    );
-  }
-
-  const bridgeUrl = process.env.AUDORA_CODEX_BRIDGE_URL?.trim();
-  if (bridgeUrl !== LOCAL_CODEX_BRIDGE_URL) {
-    throw new Error(
-      `AUDORA_CODEX_BRIDGE_URL must be exactly ${LOCAL_CODEX_BRIDGE_URL}`
     );
   }
 
@@ -211,7 +218,7 @@ export async function runLocalCodex<T extends LocalCodexTask>(
   prompt: string
 ): Promise<LocalCodexResultByTask[T]> {
   if (!requireConfiguredProvider()) {
-    throw new Error("Local Codex was called while AUDORA_AI_PROVIDER is not codex");
+    throw new Error("Local Codex was called while the configured provider is not codex");
   }
   if (!prompt.trim()) throw new Error("Local Codex prompt must not be empty");
   if (utf8Length(prompt) > MAX_PROMPT_BYTES) {
@@ -247,7 +254,13 @@ export async function runLocalCodex<T extends LocalCodexTask>(
         isRecord(body) && typeof body.error === "string"
           ? body.error.slice(0, 1_000)
           : `HTTP ${response.status}`;
-      throw new Error(`Local Codex bridge failed: ${message}`);
+      const retryAfterSeconds =
+        isRecord(body) &&
+        typeof body.retryAfterSeconds === "number" &&
+        Number.isFinite(body.retryAfterSeconds)
+          ? Math.max(1, Math.ceil(body.retryAfterSeconds))
+          : undefined;
+      throw new LocalCodexRequestError(message, response.status, retryAfterSeconds);
     }
     if (!isRecord(body) || !("result" in body)) {
       throw new Error("Local Codex bridge response did not contain a result");

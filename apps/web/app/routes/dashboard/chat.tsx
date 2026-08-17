@@ -301,7 +301,8 @@ export default function Chat() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
+        const detail = (await response.text()).trim();
+        throw new Error(detail || `Coach request failed with HTTP ${response.status}`);
       }
 
       const reader = response.body?.getReader();

@@ -64,6 +64,9 @@ const MAX_FINAL_OUTPUT_BYTES = 256 * 1024;
 const EXECUTION_TIMEOUT_MS = 120_000;
 const LOGIN_TIMEOUT_MS = 10_000;
 const LOGIN_CACHE_MS = 60_000;
+const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const DEFAULT_REASONING_EFFORT = "medium";
+const ALLOWED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 
 const STRUCTURED_SCHEMAS: Record<Exclude<CodexBridgeTask, "chat">, object> = {
   weak_word_suggestions: {
@@ -465,6 +468,24 @@ function buildBoundedPrompt(prompt: string) {
   ].join("\n");
 }
 
+function getCodexModelSettings() {
+  const model = process.env.AUDORA_CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(model)) {
+    throw new CodexBridgeExecutionError("AUDORA_CODEX_MODEL is invalid", 503);
+  }
+
+  const reasoningEffort =
+    process.env.AUDORA_CODEX_REASONING_EFFORT?.trim() || DEFAULT_REASONING_EFFORT;
+  if (!ALLOWED_REASONING_EFFORTS.has(reasoningEffort)) {
+    throw new CodexBridgeExecutionError(
+      "AUDORA_CODEX_REASONING_EFFORT must be low, medium, high, or xhigh",
+      503
+    );
+  }
+
+  return { model, reasoningEffort };
+}
+
 export async function runCodexBridgeTask(
   task: CodexBridgeTask,
   prompt: string,
@@ -479,6 +500,7 @@ export async function runCodexBridgeTask(
 
   const binary = await getCodexBinary();
   await requireChatGptLogin(binary);
+  const { model, reasoningEffort } = getCodexModelSettings();
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "audora-codex-"));
   await chmod(temporaryDirectory, 0o700);
@@ -546,6 +568,10 @@ export async function runCodexBridgeTask(
       // Fail closed if an older/future CLI cannot enforce any of the security
       // settings above instead of silently ignoring an unknown config field.
       "--strict-config",
+      "--model",
+      model,
+      "-c",
+      `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
       "exec",
       "--ephemeral",
       "--ignore-user-config",

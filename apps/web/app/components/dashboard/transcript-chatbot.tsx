@@ -129,7 +129,8 @@ export function TranscriptChatbot({ conversationId }: TranscriptChatbotProps) {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const detail = (await response.text()).trim();
+        throw new Error(detail || `Coach request failed with HTTP ${response.status}`);
       }
 
       failureStep = "read-stream";

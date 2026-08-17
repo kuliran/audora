@@ -244,13 +244,97 @@ export const forceCompleteConversation = mutation({
       args.conversationId
     );
 
-    // Mark as ended
-    await ctx.db.patch(args.conversationId, {
+    const updates: {
+      status: "ended";
+      endedAt: number;
+      summary?: string;
+    } = {
       status: "ended",
       endedAt: conversation.endedAt || Date.now(),
-      summary: "Conversation completed without transcript data",
-    });
+    };
+    if (!conversation.summary) {
+      updates.summary = "Conversation completed without transcript data";
+    }
+    await ctx.db.patch(args.conversationId, updates);
 
+    return null;
+  },
+});
+
+// Permanently delete a conversation and all data owned by it. Only the
+// initiator can remove the shared record because scanners may still need it.
+export const deleteConversation = mutation({
+  args: {
+    conversationId: v.id("conversations"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { conversation, user } = await requireConversationAccess(
+      ctx,
+      args.conversationId
+    );
+    if (conversation.initiatorUserId !== user._id) {
+      throw new Error("Only the conversation creator can delete it");
+    }
+
+    const transcriptTurns = await ctx.db
+      .query("transcriptTurns")
+      .withIndex("by_conversation_and_order", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+    const facts = await ctx.db
+      .query("conversationFacts")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+    const analytics = await ctx.db
+      .query("speechAnalytics")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+    const feedback = await ctx.db
+      .query("personalizedFeedback")
+      .withIndex("by_conversation_and_user", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+    const messages = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+    const importJobs = await ctx.db
+      .query("importJobs")
+      .withIndex("by_import_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
+
+    for (const job of importJobs) {
+      const chunkResults = await ctx.db
+        .query("importJobChunkResults")
+        .withIndex("by_import_job", (q) => q.eq("jobId", job._id))
+        .collect();
+      for (const result of chunkResults) await ctx.db.delete(result._id);
+      for (const storageId of job.chunkStorageIds) {
+        await ctx.storage.delete(storageId);
+      }
+      await ctx.db.delete(job._id);
+    }
+
+    for (const row of transcriptTurns) await ctx.db.delete(row._id);
+    for (const row of facts) await ctx.db.delete(row._id);
+    for (const row of analytics) await ctx.db.delete(row._id);
+    for (const row of feedback) await ctx.db.delete(row._id);
+    for (const row of messages) await ctx.db.delete(row._id);
+    if (conversation.audioStorageId) {
+      await ctx.storage.delete(conversation.audioStorageId);
+    }
+    await ctx.db.delete(args.conversationId);
     return null;
   },
 });
