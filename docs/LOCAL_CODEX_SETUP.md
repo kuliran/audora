@@ -228,22 +228,22 @@ open apps/macos/audora.xcodeproj
 In Xcode:
 
 1. Select the `audora` target and choose your own development team under **Signing & Capabilities** if the upstream team is unavailable.
-2. Select the shared `Audora` scheme and **My Mac** destination.
+2. Select the shared `Audora` scheme and **My Mac** destination. Its Run action is configured for the optimized Release build while retaining `AUDORA_LOCAL_SETUP`.
 3. Choose **Product → Run**.
 4. Grant Microphone and Screen & System Audio Recording access when macOS asks. Calendar access is optional for meeting discovery.
 
-After Xcode has resolved packages and signing, the equivalent command-line Debug build is:
+After Xcode has resolved packages and signing, the equivalent optimized Release build is:
 
 ```bash
 cd apps/macos
 xcodebuild \
   -project audora.xcodeproj \
   -scheme Audora \
-  -configuration Debug \
+  -configuration Release \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$PWD/.build/DerivedData" \
   build
-open "$PWD/.build/DerivedData/Build/Products/Debug/audora.app"
+open "$PWD/.build/DerivedData/Build/Products/Release/audora.app"
 ```
 
 The Mac app must start after the web and Convex processes. It obtains a 12-hour development JWT from `http://127.0.0.1:5173/api/local-auth-token` and connects only to `http://127.0.0.1:3210` in this build mode. The signing key exists only in the running web process and rotates when that process restarts.
