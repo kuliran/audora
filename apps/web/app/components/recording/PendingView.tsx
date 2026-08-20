@@ -2,7 +2,7 @@ import { api } from "@audora/backend/convex/_generated/api";
 import type { Id } from "@audora/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
 import { QRCodeSVG } from "qrcode.react";
-import { Clock, Loader2, Mic, Users } from "lucide-react";
+import { Clock, Laptop, Loader2, Mic, Users } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 
@@ -12,6 +12,44 @@ interface PendingViewProps {
 }
 
 export default function PendingView({
+  conversationId,
+  conversation,
+}: PendingViewProps) {
+  if (import.meta.env.VITE_LOCAL_AUTH === "true") {
+    return <LocalPendingView />;
+  }
+
+  return (
+    <InvitePendingView
+      conversationId={conversationId}
+      conversation={conversation}
+    />
+  );
+}
+
+function LocalPendingView() {
+  return (
+    <div className="mx-auto flex w-full max-w-xl flex-col items-center gap-5 rounded-xl border border-border bg-card p-8 text-center shadow-sm">
+      <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Laptop className="size-6" />
+      </div>
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold text-foreground">
+          Continue in the Audora Mac app
+        </h2>
+        <p className="text-sm leading-6 text-muted-foreground">
+          This local conversation is ready. Open Audora on this Mac to record
+          and transcribe on-device with Parakeet.
+        </p>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        No QR code or participant invite is needed in local mode.
+      </p>
+    </div>
+  );
+}
+
+function InvitePendingView({
   conversationId,
   conversation,
 }: PendingViewProps) {
