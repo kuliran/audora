@@ -103,7 +103,7 @@ pnpm dev
 - **[Web Quick Start](./docs/QUICK_START_WEB.md)** - Run web app in 10 minutes
 - **[Mobile Quick Start](./docs/QUICK_START_MOBILE.md)** - Run mobile app in 10 minutes
 - **[Setup Instructions](./docs/SETUP_INSTRUCTIONS.md)** - Additional configuration notes
-- **[Local setup with Codex + Parakeet](./docs/LOCAL_CODEX_SETUP.md)** - Run the hardened loopback backend, local JWT, Codex bridge, and macOS transcription
+- **[Local setup with Codex + Parakeet](./docs/LOCAL_CODEX_SETUP.md)** - Bootstrap once, then run the foreground loopback stack with two repository scripts
 
 ---
 

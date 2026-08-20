@@ -18,34 +18,18 @@ Do not use this configuration as a production deployment or on an untrusted/shar
 - Apple Silicon (`arm64`). Intel Macs are not supported by this local setup.
 - macOS 15 or later.
 - Full Xcode 16 or later, not only the Command Line Tools. Launch Xcode once to finish installing components and review/accept its license.
-- Node.js 24. The local Convex action runtime deliberately rejects Node 25+.
-- pnpm 10.29.1, matching the root `packageManager` field.
-- Codex CLI 0.143.0 or later installed and logged in with ChatGPT. An OpenAI API key is neither required nor passed to the bridge.
+- Git and SSH access to the parent and macOS repositories.
+- An existing Node.js 18 or later installation with `npm`, used only to run the bootstrap. Node 24 and pnpm do not need to be installed globally.
+- Codex CLI 0.143.0 or later installed. The bootstrap checks for ChatGPT authentication and opens `codex login` when needed. An OpenAI API key is neither required nor passed to the bridge.
 - Internet access for the one-time bootstrap downloads described below.
 
-Check the host before installing dependencies:
-
-```bash
-uname -m
-sw_vers -productVersion
-xcode-select -p
-xcodebuild -version
-node --version
-pnpm --version
-codex --version
-codex login status
-```
-
-Expected highlights are `arm64`, Node `v24.x`, pnpm `10.29.1`, a developer directory below `Xcode.app/Contents/Developer`, and `Logged in using ChatGPT`.
-
-Clone the reviewed branch over SSH, including the separate macOS repository:
+Clone the reviewed branch over SSH. The setup script initializes the separate macOS repository:
 
 ```bash
 git clone \
   --branch local-codex-parakeet \
   git@github.com:kuliran/audora.git
 cd audora
-git submodule update --init apps/macos
 ```
 
 If `xcode-select -p` prints `/Library/Developer/CommandLineTools`, install full Xcode and then select it:
@@ -54,59 +38,54 @@ If `xcode-select -p` prints `/Library/Developer/CommandLineTools`, install full 
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 ```
 
-If pnpm is missing, Node 24's Corepack can install the repository-pinned version:
+## One-time local setup
+
+Run the executable bootstrap directly from the repository root:
 
 ```bash
-corepack enable
-corepack prepare pnpm@10.29.1 --activate
+./scripts/setup-local.mjs
 ```
 
-If Codex is not already authenticated, run:
+The script validates the host, full Xcode installation, repository, pinned macOS submodule, and Codex CLI. If Codex is not authenticated with ChatGPT, it opens the official interactive login flow and verifies the result without reading stored credentials. API-key login is rejected by the coaching bridge.
 
-```bash
-codex login
-codex login status
-```
+It then:
 
-Complete the browser flow with ChatGPT. The bridge rejects API-key login and any status other than `Logged in using ChatGPT`. See the official OpenAI documentation for [Codex authentication](https://learn.chatgpt.com/docs/auth) and the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli).
+- installs a private Node 24 runtime and pnpm 10.29.1 below `.audora-local/toolchain`;
+- installs only the frozen web/backend dependency graph needed by this setup;
+- initializes the macOS submodule when it is missing, while refusing to rewrite a dirty or wrong-revision checkout;
+- creates an **anonymous local Convex deployment without a Convex cloud account**;
+- removes known Clerk, OpenAI API, Speechmatics, Zep, VAPI, Notion, and Polar configuration from that anonymous deployment without listing or reading stored values;
+- configures the loopback frontend and Codex provider in that deployment;
+- repairs private permissions and stops the temporary backend after it is ready.
 
-## Install repository dependencies
+The bootstrap is idempotent: rerunning it reuses verified downloads and local state and reapplies safe configuration. Stop the foreground launcher before rerunning it because setup needs ports `3210` and `3211`. It fails closed rather than replacing non-anonymous, non-loopback, linked, or unsafe configuration.
 
-Run these commands from the repository root:
+The bootstrap uses the normal user-scoped anonymous Convex state so an existing local deployment—and its conversations—survives repository updates and repeated setup runs. It refuses to start if `~/.convex/config.json` exists, because that file represents a Convex cloud login; the script neither reads nor changes those cloud credentials.
 
-```bash
-git submodule status apps/macos
-pnpm install --frozen-lockfile
-```
+The relevant local paths are:
 
-If `git submodule status` begins with `-`, initialize the macOS submodule first:
+| Path | Contents |
+| --- | --- |
+| `.audora-local/toolchain` | Repository-private Node 24 and pnpm 10.29.1 |
+| `~/.convex/anonymous-convex-backend-state` | Anonymous deployment credentials, SQLite data, and file storage |
+| `~/.cache/convex` | Downloaded local backend and dashboard artifacts |
+| `packages/backend/.env.local` | Private anonymous deployment selector and exact loopback URL |
 
-```bash
-git submodule update --init apps/macos
-```
+Do not move `.audora-local`, `~/.convex/anonymous-convex-backend-state`, or the selector between untrusted machines, and never commit them. The setup applies `0700` directory and `0600` file permissions to sensitive Convex state. If the selector is missing while anonymous deployment directories remain, or if it names missing state, setup stops instead of silently creating a blank replacement.
 
-Do not use the root `pnpm dev:web` command for this setup. Its dependency filter invokes the backend's ordinary `convex dev` script instead of the hardened local launcher.
-
-## Repair older local Convex state once
-
-The hardened launcher now applies `umask 077`, so newly created deployment credentials, SQLite data, uploaded files, and transcripts are private to the current OS account. Older anonymous Convex state may have been created with broader permissions.
-
-With the local backend stopped, run the repository's deliberately scoped repair. It validates the target path, refuses symbolic links, and touches only anonymous Convex state:
-
-```bash
-cd packages/backend
-pnpm secure:local-state
-```
+See the official OpenAI documentation for [Codex authentication](https://learn.chatgpt.com/docs/auth) and the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli).
 
 ## Launch all local services
 
-Run one command from the repository root and leave it running:
+After setup, run the foreground supervisor directly and leave it running:
 
 ```bash
-pnpm dev:local
+./scripts/dev-local.mjs
 ```
 
-The launcher uses Node 24, generates a fresh bridge token without printing it, starts the web/JWT/Codex process first, starts hardened local Convex, installs the matching token in that local deployment, and waits until the functions are ready. On the first run, choose **Start without an account (run Convex locally)** and accept creation of the anonymous deployment if prompted.
+The launcher re-executes itself under the repository-private Node 24 runtime. It generates a fresh bridge token without printing it or writing it to a source environment file, starts and verifies the web/JWT/Codex process first, starts hardened local Convex, installs the matching token in that anonymous deployment, and waits until the functions are usable. There is no Convex account or first-run selection prompt at launch time.
+
+Logs from the supervisor and its children remain in this terminal with labels such as `[audora]`, `[web]`, `[convex]`, and `[config]`. Keep it open while Audora is running. Press `Ctrl+C` once to stop every managed process; if any required child exits unexpectedly, the supervisor stops the rest.
 
 The ready message includes these local endpoints:
 
@@ -119,14 +98,14 @@ The launcher pins the Codex bridge to `gpt-5.5` with `medium` reasoning effort b
 ```bash
 AUDORA_CODEX_MODEL=gpt-5.5 \
 AUDORA_CODEX_REASONING_EFFORT=low \
-pnpm dev:local
+./scripts/dev-local.mjs
 ```
 
 Supported effort values are `low`, `medium`, `high`, and `xhigh`. The bridge permits at most **5 admitted Codex requests in any rolling 5-minute window**, in addition to allowing only one request at a time. A sixth request receives HTTP `429` plus a retry delay. Restarting the web process resets this development-only in-memory window.
 
-This command fixes the services required by the Mac app's “Local services are not ready” screen. Keep it running while Audora is open and press `Ctrl+C` once to stop every child service.
+The launcher checks that ports `5173`, `3210`, and `3211` are free before starting. If one is occupied, it stops without killing the existing process and prints an `lsof` command for identifying it. A successful launch fixes the services required by the Mac app's “Local services are not ready” screen.
 
-The Vite configuration forces `127.0.0.1:5173`. The hardened Convex launcher pins the backend build and ports, binds to `127.0.0.1`, disables its beacon, redacts server logs from clients, restricts the local dashboard, and creates new state with private permissions. Keep `OPENAI_API_KEY`, `SPEECHMATICS_API_KEY`, `ZEP_API_KEY`, VAPI, Notion, Clerk, and other cloud-provider credentials unset.
+The Vite configuration forces `127.0.0.1:5173`. The hardened Convex launcher pins the backend build and ports, binds to `127.0.0.1`, disables its beacon, redacts server logs from clients, restricts the local dashboard, and reuses `~/.convex/anonymous-convex-backend-state`. The supervisor removes Clerk, OpenAI API, Speechmatics, Zep, VAPI, Notion, Polar, and other cloud-provider variables from its local service environments. Keep those provider credentials out of local environment files as well.
 
 Open the authenticated application route directly; the repository root route is only the public landing page:
 
@@ -197,14 +176,15 @@ The complete local phrase set is stored in the meeting JSON. A rounded, bounded 
 
 Expect outbound traffic for:
 
-- `pnpm install`: JavaScript packages from package registries.
+- `./scripts/setup-local.mjs`: the private Node 24 and pnpm packages, followed by the frozen web/backend dependency subset from package registries.
+- Initializing `apps/macos`: the pinned macOS submodule from GitHub when it is not already present.
 - Swift Package Manager: the pinned FluidAudio and Convex Swift dependencies from GitHub. Clerk, ConvexClerk, PostHog, Sparkle, and the unused OpenAI Swift package have been removed from the local target and project graph.
 - Xcode development signing: Apple services when signing assets are not already present.
-- First anonymous Convex launch: the pinned local backend/dashboard artifacts from GitHub and an anonymous local admin-key request to `api.convex.dev`. The launcher suppresses the routine Convex version request, CLI telemetry event, Sentry upload, and backend beacon; it cannot make a brand-new Convex bootstrap fully offline.
-- Codex installation and `codex login`: OpenAI/ChatGPT.
+- First anonymous Convex bootstrap: the pinned local backend/dashboard artifacts from GitHub and an anonymous local admin-key request to `api.convex.dev`. The hardened bootstrap suppresses the routine Convex version request, CLI telemetry event, Sentry upload, and backend beacon; it cannot create a brand-new anonymous deployment fully offline. This request does not create or require a Convex cloud account.
+- `codex login`, when authentication is missing: OpenAI/ChatGPT.
 - First Parakeet use: Parakeet ASR and VAD model files requested by FluidAudio.
 
-Once packages, Convex artifacts, and Parakeet models are cached, ordinary recording/transcription and storage use only the Mac and loopback Convex. Do not run package installation, package resolution, or model-cache clearing when testing offline behavior.
+Once packages, the `.audora-local` toolchain, `~/.cache/convex` artifacts, Swift packages, and Parakeet models are cached, ordinary recording/transcription and storage use only the Mac and loopback Convex. Do not rerun setup, request package resolution, or clear model caches when testing offline behavior.
 
 ### Codex transcript egress and quota
 
@@ -281,7 +261,7 @@ This fork is a trusted-single-user development configuration:
 - Any process running as the local user can request a local JWT. Browser-origin checks reduce drive-by access to the token and Codex routes but do not defend against malicious software under the same OS account.
 - The legacy Convex application contains public functions that were not designed as a complete authorization boundary. Some browsers may also permit hostile sites to reach loopback services. Use disposable test data, keep cloud-provider keys unset, and close the processes when finished.
 - Never change the loopback URLs, add a LAN bind, expose the ports through a tunnel/reverse proxy, or deploy with `VITE_LOCAL_AUTH=true`.
-- Treat `AUDORA_CODEX_BRIDGE_TOKEN`, Convex local admin state, SQLite files, recordings, and transcripts as sensitive. Never commit them. Keep `apps/web/.env.local` at mode `0600` and the anonymous Convex state at directories `0700`/files `0600`.
+- Treat `AUDORA_CODEX_BRIDGE_TOKEN`, `.audora-local`, `packages/backend/.env.local`, `~/.convex/anonymous-convex-backend-state`, SQLite files, recordings, and transcripts as sensitive. Never commit or copy them to an untrusted machine. Keep any optional `apps/web/.env.local` at mode `0600`; the setup maintains private permissions for its anonymous Convex state.
 - Parakeet keeps audio transcription on-device after model download, but coaching sends text to OpenAI. Do not describe the combined system as offline or fully local.
 
-For the smallest ongoing external footprint, leave every provider key blank, retain `AUDORA_AI_PROVIDER=codex`, use Local Parakeet, avoid the hosted Clerk/Convex commands in the older setup guides, and stop all three local components when testing is complete.
+For the smallest ongoing external footprint, leave every provider key blank, retain `AUDORA_AI_PROVIDER=codex`, use Local Parakeet, avoid the hosted Clerk/Convex commands in the older setup guides, and stop the foreground launcher and Mac app when testing is complete.
