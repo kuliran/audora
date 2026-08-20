@@ -72,6 +72,10 @@ const localLinks = [
     type: "image/png",
     href: "/favicon.png",
   },
+  {
+    rel: "apple-touch-icon",
+    href: "/favicon.png",
+  },
 ] satisfies ReturnType<Route.LinksFunction>;
 
 export const links: Route.LinksFunction = () =>

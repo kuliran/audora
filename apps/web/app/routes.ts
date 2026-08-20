@@ -31,6 +31,12 @@ export default [
   route(".well-known/jwks.json", "routes/local-jwks.ts"),
   route("api/local-auth-token", "routes/local-auth-token.ts"),
   route("api/local-codex", "routes/local-codex.ts"),
+  route("apple-touch-icon.png", "routes/apple-touch-icon.ts"),
+  route(
+    "apple-touch-icon-precomposed.png",
+    "routes/apple-touch-icon-precomposed.ts"
+  ),
+  route("favicon.ico", "routes/favicon-ico.ts"),
   index("routes/home.tsx"),
   route("playground", "routes/playground.tsx"),
   route("waitlist", "routes/waitlist.tsx"),
