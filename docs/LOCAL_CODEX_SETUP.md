@@ -53,12 +53,13 @@ It then:
 - installs a private Node 24 runtime and pnpm 10.29.1 below `.audora-local/toolchain`;
 - installs only the frozen web/backend dependency graph needed by this setup;
 - initializes the macOS submodule when it is missing, while refusing to rewrite a dirty or wrong-revision checkout;
+- incrementally builds an optimized, sandboxed Mac app with Xcode's local ad-hoc signature, then runs its short-lived model-preparation mode to download and validate Parakeet TDT v3 and Silero VAD in the real app container;
 - creates an **anonymous local Convex deployment without a Convex cloud account**;
 - removes known Clerk, OpenAI API, Speechmatics, Zep, VAPI, Notion, and Polar configuration from that anonymous deployment without listing or reading stored values;
 - configures the loopback frontend and Codex provider in that deployment;
 - repairs private permissions and stops the temporary backend after it is ready.
 
-The bootstrap is idempotent: rerunning it reuses verified downloads and local state and reapplies safe configuration. Stop the foreground launcher before rerunning it because setup needs ports `3210` and `3211`. It fails closed rather than replacing non-anonymous, non-loopback, linked, or unsafe configuration.
+The bootstrap is idempotent: rerunning it reuses verified downloads, the Xcode build cache, the model cache, and local state, then reapplies safe configuration. Existing model files are loaded for validation rather than downloaded again. Stop the foreground launcher and the Mac app before rerunning setup: setup needs ports `3210` and `3211`, and avoiding simultaneous model activity keeps cache preparation predictable. It fails closed rather than replacing non-anonymous, non-loopback, linked, or unsafe configuration.
 
 The bootstrap uses the normal user-scoped anonymous Convex state so an existing local deployment—and its conversations—survives repository updates and repeated setup runs. It refuses to start if `~/.convex/config.json` exists, because that file represents a Convex cloud login; the script neither reads nor changes those cloud credentials.
 
@@ -67,6 +68,7 @@ The relevant local paths are:
 | Path | Contents |
 | --- | --- |
 | `.audora-local/toolchain` | Repository-private Node 24 and pnpm 10.29.1 |
+| `.audora-local/macos-derived-data` | Private incremental Xcode build, including the runnable local Mac app |
 | `~/.convex/anonymous-convex-backend-state` | Anonymous deployment credentials, SQLite data, and file storage |
 | `~/.cache/convex` | Downloaded local backend and dashboard artifacts |
 | `packages/backend/.env.local` | Private anonymous deployment selector and exact loopback URL |
@@ -119,40 +121,46 @@ In local mode, the browser recorder is intentionally disabled: a browser cannot 
 
 The fork's shared Xcode configuration already enables `AUDORA_LOCAL_SETUP`, leaves Clerk blank, and fixes the deployment URL to `http://127.0.0.1:3210`.
 
-For the first build, use Xcode so package resolution, signing, and permission prompts are visible:
+`setup-local.mjs` has already built an optimized Release app using Xcode's ad-hoc **Sign to Run Locally** identity and used that signed app to prepare the models. This does not require an Apple development team. From the repository root, launch the same artifact with:
+
+```bash
+open .audora-local/macos-derived-data/Build/Products/Release/audora.app
+```
+
+The Mac app must start after the web and Convex processes. It obtains a 12-hour development JWT from `http://127.0.0.1:5173/api/local-auth-token` and connects only to `http://127.0.0.1:3210` in this build mode. The signing key exists only in the running web process and rotates when that process restarts.
+
+You can still develop in Xcode:
 
 ```bash
 open apps/macos/audora.xcodeproj
 ```
 
-In Xcode:
+Select the shared `Audora` scheme and **My Mac** destination. Its Run action uses the optimized Release configuration while retaining `AUDORA_LOCAL_SETUP`. Keep the bundle identifier at its stable default, `com.audora.local`, and use **Sign to Run Locally** to keep subsequent builds attached to the same sandbox container. Grant Microphone and Screen & System Audio Recording access when macOS asks; Calendar access is optional for meeting discovery.
 
-1. Select the `audora` target and choose your own development team under **Signing & Capabilities** if the upstream team is unavailable.
-2. Select the shared `Audora` scheme and **My Mac** destination. Its Run action is configured for the optimized Release build while retaining `AUDORA_LOCAL_SETUP`.
-3. Choose **Product → Run**.
-4. Grant Microphone and Screen & System Audio Recording access when macOS asks. Calendar access is optional for meeting discovery.
-
-After Xcode has resolved packages and signing, the equivalent optimized Release build is:
+The setup script's equivalent build command is:
 
 ```bash
-cd apps/macos
 xcodebuild \
-  -project audora.xcodeproj \
+  -project apps/macos/audora.xcodeproj \
   -scheme Audora \
   -configuration Release \
   -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath "$PWD/.build/DerivedData" \
+  -derivedDataPath "$PWD/.audora-local/macos-derived-data" \
+  -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
+  CODE_SIGN_IDENTITY=- \
+  CODE_SIGN_STYLE=Manual \
+  DEVELOPMENT_TEAM= \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGNING_REQUIRED=YES \
   build
-open "$PWD/.build/DerivedData/Build/Products/Release/audora.app"
 ```
-
-The Mac app must start after the web and Convex processes. It obtains a 12-hour development JWT from `http://127.0.0.1:5173/api/local-auth-token` and connects only to `http://127.0.0.1:3210` in this build mode. The signing key exists only in the running web process and rotates when that process restarts.
 
 ## Parakeet download and local inference
 
-Local Parakeet is fixed as the transcription provider in `AUDORA_LOCAL_SETUP` builds.
+Local Parakeet is fixed as the transcription provider in `AUDORA_LOCAL_SETUP` builds. During setup, the signed app is launched with a dedicated `--prepare-local-models-and-exit` mode. FluidAudio downloads missing Parakeet TDT v3 and Silero VAD assets into the actual app container, loads them to validate compatibility, and exits without contacting the local backend or requesting audio permissions.
 
-The first time a recording starts, FluidAudio downloads and initializes the Parakeet TDT v3 ASR files and a voice-activity-detection model. The recording screen shows status and download progress. Let this complete before expecting transcript text.
+Starting a recording still has to load the cached models into memory, but it should not download them again. The recording screen shows initialization status. Rerunning setup is safe: a valid cache is reused and revalidated. A missing, incomplete, incompatible, manually cleared, or differently identified app container causes the corresponding assets to download again.
 
 Because the app is sandboxed, Audora keeps the Parakeet files below its bundle container:
 
@@ -179,12 +187,11 @@ Expect outbound traffic for:
 - `./scripts/setup-local.mjs`: the private Node 24 and pnpm packages, followed by the frozen web/backend dependency subset from package registries.
 - Initializing `apps/macos`: the pinned macOS submodule from GitHub when it is not already present.
 - Swift Package Manager: the pinned FluidAudio and Convex Swift dependencies from GitHub. Clerk, ConvexClerk, PostHog, Sparkle, and the unused OpenAI Swift package have been removed from the local target and project graph.
-- Xcode development signing: Apple services when signing assets are not already present.
+- Local model preparation: Parakeet ASR and Silero VAD files requested by FluidAudio from its configured model hosts. The setup app uses an ad-hoc local signature, so no Apple development-team request is needed.
 - First anonymous Convex bootstrap: the pinned local backend/dashboard artifacts from GitHub and an anonymous local admin-key request to `api.convex.dev`. The hardened bootstrap suppresses the routine Convex version request, CLI telemetry event, Sentry upload, and backend beacon; it cannot create a brand-new anonymous deployment fully offline. This request does not create or require a Convex cloud account.
 - `codex login`, when authentication is missing: OpenAI/ChatGPT.
-- First Parakeet use: Parakeet ASR and VAD model files requested by FluidAudio.
 
-Once packages, the `.audora-local` toolchain, `~/.cache/convex` artifacts, Swift packages, and Parakeet models are cached, ordinary recording/transcription and storage use only the Mac and loopback Convex. Do not rerun setup, request package resolution, or clear model caches when testing offline behavior.
+Once packages, the `.audora-local` toolchain and Xcode build, `~/.cache/convex` artifacts, Swift packages, and Parakeet models are cached, ordinary recording/transcription and storage use only the Mac and loopback Convex. Avoid package resolution and model-cache clearing when testing offline behavior; rerun setup after an update or when deliberately revalidating the installation.
 
 ### Codex transcript egress and quota
 
@@ -248,7 +255,7 @@ Open the dashboard Chat page and ask it to reply with `AUDORA_CODEX_OK`. This se
 ### End-to-end Mac check
 
 1. Start a short recording in the Mac app.
-2. On first use, wait for Parakeet and VAD download/initialization to complete.
+2. Wait for the already-cached Parakeet and VAD models to load into memory.
 3. Speak a short non-sensitive phrase, then stop the recording.
 4. Confirm transcript text appears and the finished conversation is visible at `http://127.0.0.1:5173/dashboard`.
 5. Ask a harmless coaching question. This final step tests Codex and therefore sends the selected text to OpenAI and consumes quota.

@@ -25,6 +25,9 @@ const CONVEX_SITE_URL = "http://127.0.0.1:3211";
 const FRONTEND_URL = "http://127.0.0.1:5173";
 const CODEX_BRIDGE_URL = `${FRONTEND_URL}/api/local-codex`;
 const READY_TIMEOUT_MS = 10 * 60 * 1000;
+const MAC_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
+const MODEL_PREPARATION_TIMEOUT_MS = 30 * 60 * 1000;
+const MODEL_PREPARATION_ARGUMENT = "--prepare-local-models-and-exit";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const backendRoot = join(repositoryRoot, "packages", "backend");
@@ -33,6 +36,16 @@ const backendFallbackEnvironmentPath = join(backendRoot, ".env");
 const backendConvexProjectPath = join(backendRoot, "convex.json");
 const localStateRoot = join(repositoryRoot, ".audora-local");
 const toolchainRoot = join(localStateRoot, "toolchain");
+const macOSRoot = join(repositoryRoot, "apps", "macos");
+const macDerivedDataRoot = join(localStateRoot, "macos-derived-data");
+const localMacApp = join(
+  macDerivedDataRoot,
+  "Build",
+  "Products",
+  "Release",
+  "audora.app"
+);
+const localMacExecutable = join(localMacApp, "Contents", "MacOS", "audora");
 const localNode = join(toolchainRoot, "node_modules", "node", "bin", "node");
 const localPnpm = join(toolchainRoot, "node_modules", "pnpm", "bin", "pnpm.cjs");
 const convexUserRoot = join(homedir(), ".convex");
@@ -279,6 +292,10 @@ async function runStreaming(binary, args, options = {}) {
   assertNotInterrupted();
   const interactive = options.interactive ?? true;
   const hasInput = options.input !== undefined;
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new SetupError("A streaming command timeout must be a positive number of milliseconds.");
+  }
   const processGroup = process.platform !== "win32";
   const child = spawn(binary, args, {
     cwd: options.cwd ?? repositoryRoot,
@@ -290,12 +307,41 @@ async function runStreaming(binary, args, options = {}) {
   registerChild(child, processGroup);
   if (hasInput) child.stdin.end(options.input);
 
-  const result = await new Promise((resolvePromise, rejectPromise) => {
-    child.once("error", rejectPromise);
-    child.once("exit", (code, signal) => resolvePromise({ code, signal }));
-  });
+  let timedOut = false;
+  let timeoutStopPromise = null;
+  const timeout = timeoutMs === undefined
+    ? null
+    : setTimeout(() => {
+        timedOut = true;
+        timeoutStopPromise = stopOwnedChild(child, "SIGTERM", {
+          gracefulMs: 4_000,
+          terminateMs: 2_000,
+          killMs: 1_000,
+        });
+        // The promise is awaited after the exit event; attach a handler now so
+        // an unusually fast rejection cannot become an unhandled rejection.
+        void timeoutStopPromise.catch(() => {});
+      }, timeoutMs);
+  timeout?.unref();
+
+  let result;
+  try {
+    result = await new Promise((resolvePromise, rejectPromise) => {
+      child.once("error", rejectPromise);
+      child.once("exit", (code, signal) => resolvePromise({ code, signal }));
+    });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 
   assertNotInterrupted();
+  if (timedOut) {
+    if (timeoutStopPromise) await timeoutStopPromise;
+    const seconds = Math.ceil(timeoutMs / 1_000);
+    throw new SetupError(
+      `${options.label ?? commandLabel(binary, args)} timed out after ${seconds} seconds.`
+    );
+  }
   if (result.code !== 0) {
     throw new SetupError(
       `${options.label ?? commandLabel(binary, args)} failed` +
@@ -715,6 +761,138 @@ async function installRepositoryDependencies() {
       label: "frozen pnpm dependency installation",
     }
   );
+}
+
+async function validateBuiltMacApp(codesign) {
+  const [appMetadata, executableMetadata] = await Promise.all([
+    lstat(localMacApp),
+    lstat(localMacExecutable),
+  ]);
+  if (appMetadata.isSymbolicLink() || !appMetadata.isDirectory()) {
+    throw new SetupError(`The built Mac application is not a regular bundle: ${localMacApp}`);
+  }
+  if (
+    executableMetadata.isSymbolicLink() ||
+    !executableMetadata.isFile() ||
+    executableMetadata.nlink !== 1
+  ) {
+    throw new SetupError(`The built Mac executable is linked or not a regular file.`);
+  }
+  if (
+    typeof process.getuid === "function" &&
+    (appMetadata.uid !== process.getuid() || executableMetadata.uid !== process.getuid())
+  ) {
+    throw new SetupError("The built Mac application is not owned by the current user.");
+  }
+
+  const [resolvedDerivedData, resolvedApp, resolvedExecutable] = await Promise.all([
+    realpath(macDerivedDataRoot),
+    realpath(localMacApp),
+    realpath(localMacExecutable),
+  ]);
+  if (
+    !isStrictlyContained(resolvedApp, resolvedDerivedData) ||
+    !isStrictlyContained(resolvedExecutable, resolvedApp)
+  ) {
+    throw new SetupError("The built Mac application escapes its private DerivedData directory.");
+  }
+  await access(localMacExecutable, fsConstants.X_OK);
+
+  await runCheckedCaptured(codesign, ["--verify", "--deep", "--strict", localMacApp], {
+    label: "local Mac application signature verification",
+  });
+  const entitlements = await runCheckedCaptured(
+    codesign,
+    ["--display", "--entitlements", "-", localMacApp],
+    { label: "local Mac application entitlement verification" }
+  );
+  const entitlementText = `${entitlements.stdout}\n${entitlements.stderr}`;
+  const hasXMLSandboxEntitlement =
+    /<key>com\.apple\.security\.app-sandbox<\/key>\s*<true\s*\/>/.test(entitlementText);
+  const decodedEntitlementLines = entitlementText.split(/\r?\n/).map((line) => line.trim());
+  const decodedSandboxKeyIndex = decodedEntitlementLines.indexOf(
+    "[Key] com.apple.security.app-sandbox"
+  );
+  const hasDecodedSandboxEntitlement =
+    decodedSandboxKeyIndex >= 0 &&
+    decodedEntitlementLines
+      .slice(decodedSandboxKeyIndex + 1, decodedSandboxKeyIndex + 4)
+      .includes("[Bool] true");
+  if (!hasXMLSandboxEntitlement && !hasDecodedSandboxEntitlement) {
+    throw new SetupError("The built Mac application is signed without the App Sandbox entitlement.");
+  }
+}
+
+async function prepareLocalTranscriptionModels(xcodebuild, codesign) {
+  await ensurePrivateDirectory(macDerivedDataRoot);
+
+  console.log("Building the optimized local Mac app (incremental, signed to run locally)...");
+  try {
+    await runStreaming(
+      xcodebuild,
+      [
+        "-project",
+        join(macOSRoot, "audora.xcodeproj"),
+        "-scheme",
+        "Audora",
+        "-configuration",
+        "Release",
+        "-destination",
+        "platform=macOS,arch=arm64",
+        "-derivedDataPath",
+        macDerivedDataRoot,
+        "-disableAutomaticPackageResolution",
+        "-onlyUsePackageVersionsFromResolvedFile",
+        "CODE_SIGN_IDENTITY=-",
+        "CODE_SIGN_STYLE=Manual",
+        "DEVELOPMENT_TEAM=",
+        "CODE_SIGNING_ALLOWED=YES",
+        "CODE_SIGNING_REQUIRED=YES",
+        "build",
+      ],
+      {
+        cwd: macOSRoot,
+        env: scrubCloudEnvironment(),
+        interactive: false,
+        timeoutMs: MAC_BUILD_TIMEOUT_MS,
+        label: "optimized local Mac application build",
+      }
+    );
+  } catch (error) {
+    throw new SetupError(
+      "Could not build the local Mac app with its sandboxed sign-to-run-locally signature. " +
+        `Review the Xcode output above and rerun setup. ${
+          error instanceof Error ? error.message : String(error)
+        }`
+    );
+  }
+
+  await validateBuiltMacApp(codesign);
+
+  console.log(
+    "Preparing Parakeet TDT v3 and Silero VAD inside the Audora sandbox; " +
+      "the first run can take several minutes..."
+  );
+  try {
+    await runStreaming(localMacExecutable, [MODEL_PREPARATION_ARGUMENT], {
+      cwd: macOSRoot,
+      env: {
+        ...scrubCloudEnvironment(),
+        NSUnbufferedIO: "YES",
+      },
+      interactive: false,
+      timeoutMs: MODEL_PREPARATION_TIMEOUT_MS,
+      label: "local transcription model preparation",
+    });
+  } catch (error) {
+    throw new SetupError(
+      "The signed Mac app could not prepare its local transcription models. " +
+        "Check access to FluidAudio's model host, then rerun setup; a valid existing cache " +
+        `will be reused. ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  console.log("Local transcription models validated in the Audora App Sandbox cache.");
 }
 
 function parseAllowlistedEnvironment(contents, label, allowedNames) {
@@ -1194,10 +1372,12 @@ async function bootstrapConvex() {
 
 async function main() {
   console.log("Audora local one-time setup\n");
-  const [git, npm, codex] = await Promise.all([
+  const [git, npm, codex, xcodebuild, codesign] = await Promise.all([
     findExecutable("git"),
     findExecutable("npm"),
     findExecutable("codex"),
+    findExecutable("xcodebuild"),
+    findExecutable("codesign"),
   ]);
 
   await validateHost();
@@ -1206,11 +1386,14 @@ async function main() {
   await ensureCodexLogin(codex);
   await initializeSubmodule(git);
   await installRepositoryDependencies();
+  await prepareLocalTranscriptionModels(xcodebuild, codesign);
   await bootstrapConvex();
 
   console.log("\nLocal setup is complete.");
   console.log(`  Convex: anonymous data at ${CONVEX_URL} and ${CONVEX_SITE_URL} when launched`);
   console.log(`  Web/JWT: ${FRONTEND_URL} when launched`);
+  console.log(`  Mac app: ${localMacApp}`);
+  console.log("  Parakeet/VAD: cached and validated in the app sandbox");
   console.log("  Cloud provider keys: not required");
   console.log("Run the foreground launcher next and leave it open while using the Mac app.");
 }
