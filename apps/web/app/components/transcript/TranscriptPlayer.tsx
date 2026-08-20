@@ -1,7 +1,7 @@
 import { api } from "@audora/backend/convex/_generated/api";
 import type { Id } from "@audora/backend/convex/_generated/dataModel";
 import { useQuery } from "convex/react";
-import { AlertCircle, Pause, Play, PlayCircle, SkipBack, SkipForward, Target, Waves, Zap } from "lucide-react";
+import { AlertCircle, Gauge, Mic, MonitorSpeaker, Pause, Play, PlayCircle, SkipBack, SkipForward, Target, Waves, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Waveform } from "~/components/audio/Waveform";
 import { useAudioPlaybackOptional } from "~/hooks/use-audio-playback";
@@ -18,6 +18,7 @@ interface Word {
   startTime: number;
   endTime: number;
   wordId: string;
+  confidence?: number;
 }
 
 interface TranscriptTurn {
@@ -55,10 +56,105 @@ type RenderTurn = TranscriptTurn & {
 
 const DEFAULT_ESTIMATED_WORD_DURATION_SEC = 0.35;
 const MIN_ESTIMATED_TURN_DURATION_SEC = 0.6;
+const MAX_VISIBLE_ACOUSTIC_PHRASES = 200;
+
+type AcousticMetricFields = {
+  paceWpm?: number;
+  articulationRateWpm?: number;
+  medianPitchHz?: number;
+  pitchRangeSemitones?: number;
+  pitchDirection?: "falling" | "level" | "rising" | "varied" | "unavailable";
+  relativeVolumeDb?: number;
+  volumeVariabilityDb?: number;
+  steadiness?: number;
+  voicedRatio?: number;
+  qualityFlags?: string[];
+};
+
+function rounded(value: number, decimals = 0) {
+  const scale = 10 ** decimals;
+  return Math.round(value * scale) / scale;
+}
+
+function signed(value: number) {
+  const formatted = rounded(value, 1);
+  return formatted > 0 ? `+${formatted}` : String(formatted);
+}
+
+function formatQualityFlag(flag: string) {
+  return flag
+    .replace(/[_-]+/g, " ")
+    .replace(/^./, (firstCharacter) => firstCharacter.toUpperCase());
+}
+
+function getMetricItems(
+  metrics: AcousticMetricFields | undefined,
+  includeRelativeVolume = false
+) {
+  if (!metrics) return [];
+
+  const items: Array<{ label: string; value: string; localOnly?: boolean }> = [];
+  if (metrics.paceWpm !== undefined) {
+    items.push({ label: "Delivery pace", value: `${rounded(metrics.paceWpm)} WPM` });
+  }
+  if (metrics.articulationRateWpm !== undefined) {
+    items.push({
+      label: "Articulation",
+      value: `${rounded(metrics.articulationRateWpm)} WPM`,
+    });
+  }
+  if (metrics.medianPitchHz !== undefined) {
+    items.push({
+      label: "Median pitch",
+      value: `${rounded(metrics.medianPitchHz)} Hz`,
+      localOnly: true,
+    });
+  }
+  if (metrics.pitchRangeSemitones !== undefined) {
+    items.push({
+      label: "Pitch range",
+      value: `${rounded(metrics.pitchRangeSemitones, 1)} st`,
+    });
+  }
+  if (metrics.pitchDirection && metrics.pitchDirection !== "unavailable") {
+    items.push({
+      label: "Pitch direction",
+      value: formatQualityFlag(metrics.pitchDirection),
+    });
+  }
+  if (includeRelativeVolume && metrics.relativeVolumeDb !== undefined) {
+    items.push({
+      label: "Relative volume",
+      value: `${signed(metrics.relativeVolumeDb)} dB`,
+    });
+  }
+  if (metrics.volumeVariabilityDb !== undefined) {
+    items.push({
+      label: "Volume variation",
+      value: `${rounded(metrics.volumeVariabilityDb, 1)} dB`,
+    });
+  }
+  if (metrics.steadiness !== undefined) {
+    items.push({
+      label: "Cadence steadiness",
+      value: `${rounded(metrics.steadiness * 100)}%`,
+    });
+  }
+  if (metrics.voicedRatio !== undefined) {
+    items.push({
+      label: "Voiced coverage",
+      value: `${rounded(metrics.voicedRatio * 100)}%`,
+    });
+  }
+  return items;
+}
 
 export default function TranscriptPlayer({ conversationId, getUserName, children }: TranscriptPlayerProps) {
   const transcriptTurns = useQuery(api.conversations.getTranscript, { conversationId }) || [];
   const audioUrl = useQuery(api.conversations.getAudioUrl, { conversationId });
+  const acousticMetrics = useQuery(api.conversations.getAcousticMetrics, {
+    conversationId,
+  });
   const speakers = useQuery(api.conversations.getSpeakers, { conversationId });
   const currentUser = useQuery(api.users.getCurrentUser);
   const analytics = useQuery(
@@ -368,15 +464,22 @@ export default function TranscriptPlayer({ conversationId, getUserName, children
     }
   };
 
-  const handleWordClick = (word: RenderWord) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = word.startTime;
-      setActiveWordId(word.wordId);
-      if (!isPlaying) {
-        audioRef.current.play();
-        setIsPlaying(true);
-      }
+  const seekToTimestamp = (time: number, activeWord?: string) => {
+    if (!audioRef.current || !Number.isFinite(time)) return;
+    const targetTime = Math.max(0, duration > 0 ? Math.min(time, duration) : time);
+    audioRef.current.currentTime = targetTime;
+    setCurrentTime(targetTime);
+    setActiveWordId(activeWord ?? null);
+    if (!isPlaying) {
+      void audioRef.current.play();
+      setIsPlaying(true);
     }
+  };
+
+  const handleWordClick = (word: RenderWord) => {
+    // Real Parakeet/Speechmatics timings always win. Synthetic timings are
+    // only created for legacy turns that have no word timing data at all.
+    seekToTimestamp(word.startTime, word.wordId);
   };
 
   // Calculate timeline markers for highlights
@@ -594,6 +697,165 @@ export default function TranscriptPlayer({ conversationId, getUserName, children
         />
       </div>
 
+      {acousticMetrics?.sources.some(
+        (source) =>
+          getMetricItems(source.overall).length > 0 ||
+          (source.phrases?.length ?? 0) > 0
+      ) && (
+        <details className="group shrink-0 rounded-xl border border-border bg-card shadow-sm">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:hidden">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Gauge className="size-4" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Voice & cadence
+                </h3>
+                <p className="truncate text-xs text-muted-foreground">
+                  Calculated locally · select a phrase to play it
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-medium text-muted-foreground transition-colors group-open:text-primary">
+              Details
+            </span>
+          </summary>
+
+          <div className="grid gap-3 border-t border-border/70 p-4 lg:grid-cols-2">
+            {acousticMetrics.sources.map((source) => {
+              const overallItems = getMetricItems(source.overall);
+              const phrases = source.phrases ?? [];
+              const visiblePhrases = phrases.slice(0, MAX_VISIBLE_ACOUSTIC_PHRASES);
+              const sourceLabel =
+                source.source === "mic" ? "Microphone" : "System audio";
+              const SourceIcon = source.source === "mic" ? Mic : MonitorSpeaker;
+
+              if (overallItems.length === 0 && phrases.length === 0) return null;
+
+              return (
+                <section
+                  key={source.source}
+                  className="min-w-0 rounded-lg border border-border/70 bg-muted/20 p-4"
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <SourceIcon className="size-4 text-primary" />
+                      <div>
+                        <h4 className="text-sm font-semibold text-foreground">
+                          {sourceLabel}
+                        </h4>
+                        {source.speaker && (
+                          <p className="text-xs text-muted-foreground">
+                            {source.speaker}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    {source.scope === "mixed_channel" && (
+                      <span
+                        className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title="System audio can contain multiple speakers. These measurements are not attributed to one person."
+                      >
+                        Mixed channel
+                      </span>
+                    )}
+                  </div>
+
+                  {overallItems.length > 0 && (
+                    <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 2xl:grid-cols-3">
+                      {overallItems.map((item) => (
+                        <div
+                          key={item.label}
+                          className="rounded-md bg-background/70 px-2.5 py-2"
+                          title={
+                            item.localOnly
+                              ? "Displayed locally; absolute pitch is omitted from AI coaching context."
+                              : undefined
+                          }
+                        >
+                          <dt className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {item.label}
+                          </dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">
+                            {item.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+
+                  {source.overall?.qualityFlags?.length ? (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {source.overall.qualityFlags.map((flag) => (
+                        <span
+                          key={flag}
+                          className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground"
+                        >
+                          {formatQualityFlag(flag)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {visiblePhrases.length > 0 && (
+                    <div className="mt-4 border-t border-border/60 pt-3">
+                      <p className="mb-2 text-xs font-medium text-muted-foreground">
+                        Phrase windows ({phrases.length})
+                      </p>
+                      <div className="max-h-48 space-y-1.5 overflow-y-auto pr-1 custom-scrollbar">
+                        {visiblePhrases.map((phrase, phraseIndex) => {
+                          const phraseItems = getMetricItems(phrase, true).filter(
+                            (item) => !item.localOnly
+                          );
+                          const phraseMetadata = [
+                            ...phraseItems
+                              .slice(0, 4)
+                              .map((item) => `${item.label}: ${item.value}`),
+                            ...(phrase.qualityFlags ?? [])
+                              .slice(0, 2)
+                              .map(formatQualityFlag),
+                          ].join(" · ");
+                          return (
+                            <button
+                              key={`${phrase.startTime}-${phrase.endTime}-${phraseIndex}`}
+                              type="button"
+                              onClick={() => seekToTimestamp(phrase.startTime)}
+                              className="block w-full rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-background/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                              title={`Play from ${formatTimestamp(phrase.startTime)}`}
+                            >
+                              <span className="flex items-center gap-2">
+                                <PlayCircle className="size-3.5 shrink-0 text-primary" />
+                                <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+                                  {formatTimestamp(phrase.startTime)}
+                                </span>
+                                <span className="truncate text-xs text-foreground">
+                                  {phrase.text?.trim() || `Phrase ${phraseIndex + 1}`}
+                                </span>
+                              </span>
+                              {phraseMetadata && (
+                                <span className="mt-1 block truncate pl-[4.6rem] text-[10px] text-muted-foreground">
+                                  {phraseMetadata}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {phrases.length > visiblePhrases.length && (
+                        <p className="mt-2 text-[10px] text-muted-foreground">
+                          Showing the first {visiblePhrases.length} phrase windows.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        </details>
+      )}
+
       {/* Enhanced Transcript */}
       <div className="bg-card border border-border rounded-xl p-6 pb-16 flex flex-col flex-1 min-h-0 shadow-sm relative">
         <div className="flex items-center justify-between mb-5 shrink-0 pb-4 border-b border-border/50">
@@ -653,16 +915,7 @@ export default function TranscriptPlayer({ conversationId, getUserName, children
                 <div className="flex-shrink-0 w-14">
                   {turnStartTime !== null && (
                     <button
-                      onClick={() => {
-                        if (audioRef.current) {
-                          audioRef.current.currentTime = turnStartTime;
-                          setCurrentTime(turnStartTime);
-                          if (!isPlaying) {
-                            audioRef.current.play();
-                            setIsPlaying(true);
-                          }
-                        }
-                      }}
+                      onClick={() => seekToTimestamp(turnStartTime)}
                       className="flex items-center gap-1 text-xs font-mono text-muted-foreground hover:text-primary transition-colors cursor-pointer group/timestamp"
                       title={`Jump to ${formatTimestamp(turnStartTime)}`}
                     >
@@ -689,13 +942,22 @@ export default function TranscriptPlayer({ conversationId, getUserName, children
                     <p className="text-foreground leading-relaxed text-[15px]">
                       {turn.renderWords.map((word, idx) => {
                         const isActive = activeWordId === word.wordId;
+                        const highlightType = wordHighlights.get(word.wordId)?.type;
+                        const wordTitle = [
+                          highlightType,
+                          word.confidence !== undefined
+                            ? `ASR confidence ${rounded(word.confidence * 100)}%`
+                            : undefined,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ");
                         return (
                           <span
                             key={word.wordId}
                             ref={isActive ? activeWordRef : null}
                             onClick={() => handleWordClick(word)}
                             className={getWordClassName(word, isActive)}
-                            title={wordHighlights.get(word.wordId)?.type || undefined}
+                            title={wordTitle || undefined}
                           >
                             {word.word}
                             {idx < turn.renderWords.length - 1 && " "}

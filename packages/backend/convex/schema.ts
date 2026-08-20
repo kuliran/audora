@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { acousticMetricsValidator } from "./acousticMetrics";
 
 export default defineSchema({
   users: defineTable({
@@ -89,11 +90,20 @@ export default defineSchema({
       startTime: v.number(),
       endTime: v.number(),
       wordId: v.string(),
+      confidence: v.optional(v.number()),
     }))), // Word-level timing data for new conversations
   })
     .index("by_conversation_and_order", ["conversationId", "order"])
     .index("by_user", ["userId"])
     .index("by_conversation_and_user", ["conversationId", "userId"]),
+
+  // Kept outside the conversation row so dashboard list queries do not read
+  // every phrase-level metric for every historical conversation.
+  conversationAcousticMetrics: defineTable({
+    conversationId: v.id("conversations"),
+    metrics: acousticMetricsValidator,
+    updatedAt: v.number(),
+  }).index("by_conversation", ["conversationId"]),
 
   conversationFacts: defineTable({
     conversationId: v.id("conversations"),

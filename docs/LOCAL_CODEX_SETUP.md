@@ -183,6 +183,14 @@ Because the app is sandboxed, Audora keeps the Parakeet files below its bundle c
 
 After those files are cached, microphone and system-audio transcription runs on the Apple Silicon Mac. It does not send audio to Speechmatics or OpenAI. Deleting the model cache causes another download. Codex coaching remains online even when Parakeet inference is local.
 
+### Local timestamps and voice metrics
+
+Parakeet token timings and confidence are preserved as word-level transcript data. The Mac also calculates phrase and overall delivery measurements independently for microphone and system audio: pace, articulation rate, pitch range and direction, volume variation, relative phrase volume, cadence steadiness, voiced coverage, and signal-quality flags. Absolute median pitch is available in the local UI.
+
+This analysis is native Swift and runs after each phrase, outside the realtime Core Audio callback. It does not load another model or retain waveform features, pitch contours, voice embeddings, speaker fingerprints, emotion labels, or health/personality inferences. System audio is always marked as a mixed channel and must not be attributed to one person.
+
+The complete local phrase set is stored in the meeting JSON. A rounded, bounded copy (at most 200 evenly sampled phrases per source) is stored in a separate table in the loopback Convex database so conversation lists stay small. Before metrics enter a Codex coaching prompt, absolute median pitch is removed; rates and relative measurements are rounded or converted to categories. Transcript words and phrase rows in the Mac and web UI can seek the saved recording by timestamp.
+
 ## Expected network traffic
 
 ### First bootstrap

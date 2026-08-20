@@ -2,6 +2,10 @@ import { v } from "convex/values";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { action, internalMutation, mutation, query } from "./_generated/server";
+import {
+  acousticMetricsValidator,
+  validateAcousticMetrics,
+} from "./acousticMetrics";
 import { runLocalCodex, shouldUseLocalCodex } from "./localCodex";
 
 async function requireCurrentUser(ctx: any) {
@@ -313,6 +317,12 @@ export const deleteConversation = mutation({
         q.eq("conversationId", args.conversationId)
       )
       .collect();
+    const acousticMetrics = await ctx.db
+      .query("conversationAcousticMetrics")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .collect();
 
     for (const job of importJobs) {
       const chunkResults = await ctx.db
@@ -331,6 +341,7 @@ export const deleteConversation = mutation({
     for (const row of analytics) await ctx.db.delete(row._id);
     for (const row of feedback) await ctx.db.delete(row._id);
     for (const row of messages) await ctx.db.delete(row._id);
+    for (const row of acousticMetrics) await ctx.db.delete(row._id);
     if (conversation.audioStorageId) {
       await ctx.storage.delete(conversation.audioStorageId);
     }
@@ -352,6 +363,7 @@ const saveTranscriptDataArgs = {
       startTime: v.number(),
       endTime: v.number(),
       wordId: v.string(),
+      confidence: v.optional(v.number()),
     }))),
   })),
   S1_facts: v.array(v.string()),
@@ -360,6 +372,7 @@ const saveTranscriptDataArgs = {
   scannerName: v.optional(v.string()),
   summary: v.string(),
   anonymousSpeakerCount: v.optional(v.number()),
+  acousticMetrics: v.optional(acousticMetricsValidator),
 };
 
 function inferTranscriptDurationMs(transcript: any[]): number | null {
@@ -383,12 +396,31 @@ function inferTranscriptDurationMs(transcript: any[]): number | null {
   return Math.round(maxEndTimeSeconds * 1000);
 }
 
+function validateTranscriptWordConfidences(transcript: any[]) {
+  for (const [turnIndex, turn] of transcript.entries()) {
+    if (!Array.isArray(turn.words)) continue;
+    for (const [wordIndex, word] of turn.words.entries()) {
+      if (word.confidence === undefined) continue;
+      if (
+        !Number.isFinite(word.confidence) ||
+        word.confidence < 0 ||
+        word.confidence > 1
+      ) {
+        throw new Error(
+          `transcript[${turnIndex}].words[${wordIndex}].confidence must be between 0 and 1`
+        );
+      }
+    }
+  }
+}
+
 async function saveTranscriptDataImpl(ctx: any, args: any) {
   // Get conversation to extract user IDs
   const conversation = await ctx.db.get(args.conversationId);
   if (!conversation) {
     throw new Error("Conversation not found");
   }
+  validateTranscriptWordConfidences(args.transcript);
 
   // Save summary to conversation
   const detectedAnonymousSpeakers = new Set(
@@ -417,6 +449,28 @@ async function saveTranscriptDataImpl(ctx: any, args: any) {
 
   if (anonymousSpeakerCount > 0) {
     conversationUpdates.anonymousSpeakerCount = anonymousSpeakerCount;
+  }
+
+  if (args.acousticMetrics !== undefined) {
+    validateAcousticMetrics(args.acousticMetrics);
+    const existingMetrics = await ctx.db
+      .query("conversationAcousticMetrics")
+      .withIndex("by_conversation", (q: any) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .unique();
+    if (existingMetrics) {
+      await ctx.db.patch(existingMetrics._id, {
+        metrics: args.acousticMetrics,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("conversationAcousticMetrics", {
+        conversationId: args.conversationId,
+        metrics: args.acousticMetrics,
+        updatedAt: Date.now(),
+      });
+    }
   }
 
   await ctx.db.patch(args.conversationId, conversationUpdates);
@@ -709,6 +763,7 @@ export const getTranscript = query({
         startTime: v.number(),
         endTime: v.number(),
         wordId: v.string(),
+        confidence: v.optional(v.number()),
       }))),
     })
   ),
@@ -735,6 +790,25 @@ export const getTranscript = query({
     }
 
     return dedupedTurns;
+  },
+});
+
+// Get locally calculated acoustic metrics without loading transcript rows.
+export const getAcousticMetrics = query({
+  args: { conversationId: v.id("conversations") },
+  returns: v.union(acousticMetricsValidator, v.null()),
+  handler: async (ctx, args) => {
+    await requireConversationAccess(
+      ctx,
+      args.conversationId
+    );
+    const row = await ctx.db
+      .query("conversationAcousticMetrics")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .unique();
+    return row?.metrics ?? null;
   },
 });
 

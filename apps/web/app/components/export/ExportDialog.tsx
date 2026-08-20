@@ -25,6 +25,9 @@ export function ExportDialog({ conversationId, trigger }: ExportDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
   
   const conversation = useQuery(api.conversations.get, { id: conversationId });
+  const acousticMetrics = useQuery(api.conversations.getAcousticMetrics, {
+    conversationId,
+  });
   const transcript = useQuery(api.conversations.getTranscript, { conversationId });
   const speakers = useQuery(api.conversations.getSpeakers, { conversationId });
   const currentUser = useQuery(api.users.getCurrentUser);
@@ -68,7 +71,7 @@ export function ExportDialog({ conversationId, trigger }: ExportDialogProps) {
   };
   
   const handleExportJSON = () => {
-    if (!transcript || !speakers || !analytics) return;
+    if (!transcript || !speakers || !analytics || acousticMetrics === undefined) return;
     
     const exportData = {
       conversation: {
@@ -94,6 +97,7 @@ export function ExportDialog({ conversationId, trigger }: ExportDialogProps) {
         repetitions: analytics.repetitions,
         sentenceStarters: analytics.sentenceStarters,
       },
+      acousticMetrics,
     };
     
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
@@ -215,7 +219,7 @@ export function ExportDialog({ conversationId, trigger }: ExportDialogProps) {
                 variant="outline"
                 className="justify-start gap-2"
                 onClick={handleExportJSON}
-                disabled={!transcript || !analytics}
+                disabled={!transcript || !speakers || !analytics || acousticMetrics === undefined}
               >
                 <FileJson className="w-4 h-4" />
                 <span>Export Full Data (.json)</span>

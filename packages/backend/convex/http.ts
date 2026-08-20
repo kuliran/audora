@@ -4,6 +4,7 @@ import { httpRouter } from "convex/server";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
+import { formatAcousticMetricsForAI } from "./acousticMetrics";
 import { LocalCodexRequestError, runLocalCodex, shouldUseLocalCodex } from "./localCodex";
 import { paymentWebhook } from "./subscriptions";
 
@@ -101,6 +102,11 @@ export const chat = httpAction(async (ctx, req) => {
           conversationId: conversationId as Id<"conversations">
         });
 
+        const acousticMetrics = await ctx.runQuery(
+          api.conversations.getAcousticMetrics,
+          { conversationId: conversationId as Id<"conversations"> }
+        );
+
         // Fetch analytics for all speakers in this conversation
         const analytics = await ctx.runQuery(api.analytics.getConversationAnalytics, {
           conversationId: conversationId as Id<"conversations">
@@ -111,6 +117,13 @@ export const chat = httpAction(async (ctx, req) => {
         conversationContext += `Status: ${conversation.status}\n`;
         if (conversation.location) conversationContext += `Context: ${conversation.location}\n`;
         if (conversation.summary) conversationContext += `Summary: ${conversation.summary}\n\n`;
+
+        const acousticContext = formatAcousticMetricsForAI(
+          acousticMetrics ?? undefined
+        );
+        if (acousticContext) {
+          conversationContext += `${acousticContext}\n`;
+        }
 
         // Add analytics data
         if (analytics && analytics.length > 0) {
@@ -206,9 +219,22 @@ export const chat = httpAction(async (ctx, req) => {
               conversationId: conv._id
             });
 
+            const acousticMetrics = await ctx.runQuery(
+              api.conversations.getAcousticMetrics,
+              { conversationId: conv._id }
+            );
+
             conversationContext += `### Conversation ${conv._id} (${new Date(conv._creationTime).toLocaleDateString()})\n`;
             conversationContext += `Status: ${conv.status}\n`;
             if (conv.summary) conversationContext += `Summary: ${conv.summary}\n`;
+
+            const acousticContext = formatAcousticMetricsForAI(
+              acousticMetrics ?? undefined,
+              12
+            );
+            if (acousticContext) {
+              conversationContext += acousticContext;
+            }
 
             if (transcript.length > 0) {
               conversationContext += `Transcript:\n`;
@@ -245,6 +271,8 @@ export const chat = httpAction(async (ctx, req) => {
 - Suggest actionable improvements based on the analytics data
 - Help users recall important points from the conversation
 - Reference specific quotes from the transcript when relevant
+- Treat acoustic delivery metrics as approximate coaching signals, respect their quality flags, and never infer identity, emotion, health, or personality from them
+- Never attribute mixed system-audio metrics to an individual speaker
 
 ## YOUR APPROACH:
 - Be specific and reference exact numbers/quotes
@@ -254,7 +282,7 @@ export const chat = httpAction(async (ctx, req) => {
 
 ${conversationContext}
 
-When discussing analytics, always reference specific numbers and patterns from the data above. Be concise and actionable.`
+When discussing analytics, reference the supplied numbers and patterns from the data above. Preserve approximate wording for rounded acoustic metrics. Be concise and actionable.`
     : `You are a warm, insightful Communication Coach and Reflection Expert for LinkMaxxing. Your role is to help users become more intentional, articulate communicators and build deeper relationships.
 
 ## YOUR PERSONALITY:
