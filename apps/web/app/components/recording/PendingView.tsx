@@ -2,9 +2,11 @@ import { api } from "@audora/backend/convex/_generated/api";
 import type { Id } from "@audora/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
 import { QRCodeSVG } from "qrcode.react";
-import { Clock, Laptop, Loader2, Mic, Users } from "lucide-react";
+import { Clock, ExternalLink, Laptop, Loader2, Mic, Users } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { Button } from "~/components/ui/button";
+import { getLocalAppConversationUrl } from "~/lib/local-app-handoff";
 
 interface PendingViewProps {
   conversationId: string;
@@ -16,7 +18,7 @@ export default function PendingView({
   conversation,
 }: PendingViewProps) {
   if (import.meta.env.VITE_LOCAL_AUTH === "true") {
-    return <LocalPendingView />;
+    return <LocalPendingView conversationId={conversationId} />;
   }
 
   return (
@@ -27,7 +29,7 @@ export default function PendingView({
   );
 }
 
-function LocalPendingView() {
+function LocalPendingView({ conversationId }: { conversationId: string }) {
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col items-center gap-5 rounded-xl border border-border bg-card p-8 text-center shadow-sm">
       <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -42,6 +44,12 @@ function LocalPendingView() {
           and transcribe on-device with Parakeet.
         </p>
       </div>
+      <Button asChild size="lg">
+        <a href={getLocalAppConversationUrl(conversationId)}>
+          Open Audora
+          <ExternalLink className="size-4" />
+        </a>
+      </Button>
       <p className="text-xs text-muted-foreground">
         No QR code or participant invite is needed in local mode.
       </p>

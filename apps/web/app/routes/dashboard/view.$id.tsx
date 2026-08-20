@@ -2,14 +2,15 @@ import { api } from "@audora/backend/convex/_generated/api";
 import type { Id } from "@audora/backend/convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
 import { AlertCircle, ArrowLeft, Calendar, Clock, Loader2, MoveUpLeft, Share2, Square, Trash2, Users } from "lucide-react";
-import { useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { PersonalizedFeedback } from "~/components/analytics/PersonalizedFeedback";
 import { AnalyticsPanel } from "~/components/dashboard/analytics-panel";
 import { TranscriptChatbot } from "~/components/dashboard/transcript-chatbot";
 import { ExportDialog } from "~/components/export/ExportDialog";
 import CurrentView from "~/components/recording/CurrentView";
+import LocalAppHandoffDialog from "~/components/recording/LocalAppHandoffDialog";
 import PendingView from "~/components/recording/PendingView";
 import TranscriptPlayer from "~/components/transcript/TranscriptPlayer";
 import { Button } from "~/components/ui/button";
@@ -25,13 +26,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { AudioPlaybackProvider } from "~/hooks/use-audio-playback";
 import { getConversationDisplayTitle } from "~/lib/conversation-context";
 import { formatConversationDuration, getConversationDurationMs } from "~/lib/conversation-duration";
+import type { LocalAppHandoffNavigationState } from "~/lib/local-app-handoff";
 
 export default function ConversationDetailPage() {
   const { id } = useParams<{ id: Id<"conversations"> }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("analytics");
   const [isEnding, setIsEnding] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isLocalAppPromptOpen, setIsLocalAppPromptOpen] = useState(false);
   const forceCompleteConversation = useMutation(api.conversations.forceCompleteConversation);
   const deleteConversation = useMutation(api.conversations.deleteConversation);
 
@@ -63,6 +67,21 @@ export default function ConversationDetailPage() {
     conversation?.scannerUserId ? { id: conversation.scannerUserId } : "skip"
   );
   const currentUser = useQuery(api.users.getCurrentUser);
+
+  useEffect(() => {
+    if (import.meta.env.VITE_LOCAL_AUTH !== "true" || !id) return;
+
+    const navigationState = location.state as
+      | LocalAppHandoffNavigationState
+      | null;
+    if (navigationState?.openLocalAppConversationId !== id) return;
+
+    setIsLocalAppPromptOpen(true);
+    navigate(`${location.pathname}${location.search}${location.hash}`, {
+      replace: true,
+      state: null,
+    });
+  }, [id, location.hash, location.pathname, location.search, location.state, navigate]);
 
   const handleEndConversation = async () => {
     if (!id || isEnding) return;
@@ -144,6 +163,14 @@ export default function ConversationDetailPage() {
 
     return (
       <div className="h-full bg-background flex flex-col">
+        {import.meta.env.VITE_LOCAL_AUTH === "true" ? (
+          <LocalAppHandoffDialog
+            conversationId={id}
+            open={isLocalAppPromptOpen}
+            onOpenChange={setIsLocalAppPromptOpen}
+          />
+        ) : null}
+
         {/* Header Bar */}
         <div className="border-b border-border bg-card/50 backdrop-blur-sm">
           <div className="flex items-center justify-between px-4 py-3">

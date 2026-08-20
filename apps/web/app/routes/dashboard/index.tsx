@@ -15,8 +15,11 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { buildConversationContextLabel } from "~/lib/conversation-context";
+import { createLocalAppHandoffState } from "~/lib/local-app-handoff";
 import ConversationHistory from "../../components/ConversationHistory";
 import { Button } from "../../components/ui/button";
+
+const isLocalSetup = import.meta.env.VITE_LOCAL_AUTH === "true";
 
 export default function Page() {
   const { isSignedIn } = useAuth();
@@ -36,8 +39,17 @@ export default function Page() {
       setIsCreating(true);
       const result = await createConversation({
         location: buildConversationContextLabel("live"),
+        ...(isLocalSetup
+          ? { participantMode: "anonymous" as const, reusePending: false }
+          : {}),
       });
-      navigate(`/dashboard/record/${result.id}`);
+      if (isLocalSetup) {
+        navigate(`/dashboard/conversations/${result.id}`, {
+          state: createLocalAppHandoffState(result.id),
+        });
+      } else {
+        navigate(`/dashboard/record/${result.id}`);
+      }
     } catch (error) {
       console.error("Failed to create conversation:", error);
       toast.error("Failed to start recording. Please try again.");
