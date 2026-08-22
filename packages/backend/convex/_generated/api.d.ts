@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as acousticMetrics from "../acousticMetrics.js";
 import type * as analytics from "../analytics.js";
 import type * as chat from "../chat.js";
 import type * as conversations from "../conversations.js";
@@ -45,6 +46,7 @@ import type {
  * ```
  */
 declare const fullApi: ApiFromModules<{
+  acousticMetrics: typeof acousticMetrics;
   analytics: typeof analytics;
   chat: typeof chat;
   conversations: typeof conversations;
