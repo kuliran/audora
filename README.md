@@ -99,6 +99,7 @@ pnpm dev
 
 ### For Developers
 
+- **[Standalone native product RFC](./apps/macos/rfc/README.md)** - Canonical scope and architecture for the simplified local macOS speech coach
 - **[Documentation Index](./docs/README.md)** - Complete documentation guide
 - **[Web Quick Start](./docs/QUICK_START_WEB.md)** - Run web app in 10 minutes
 - **[Mobile Quick Start](./docs/QUICK_START_MOBILE.md)** - Run mobile app in 10 minutes
