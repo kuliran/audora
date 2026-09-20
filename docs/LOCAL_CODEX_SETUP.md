@@ -16,8 +16,8 @@ Do not use this configuration as a production deployment or on an untrusted/shar
 ## Prerequisites
 
 - Apple Silicon (`arm64`). Intel Macs are not supported by this local setup.
-- macOS 15 or later.
-- Full Xcode 16 or later, not only the Command Line Tools. Launch Xcode once to finish installing components and review/accept its license.
+- macOS 26.0 or later.
+- Full Xcode 26.0 or later, not only the Command Line Tools. Launch Xcode once to finish installing components and review/accept its license.
 - Git and SSH access to the parent and macOS repositories.
 - An existing Node.js 18 or later installation with `npm`, used only to run the bootstrap. Node 24 and pnpm do not need to be installed globally.
 - Codex CLI 0.143.0 or later installed. The bootstrap checks for ChatGPT authentication and opens `codex login` when needed. An OpenAI API key is neither required nor passed to the bridge.
@@ -208,7 +208,7 @@ Its process boundary follows the official [non-interactive Codex](https://learn.
 
 Because it uses ChatGPT authentication, these calls consume the Codex allowance or credits attached to that ChatGPT account/workspace, not an `OPENAI_API_KEY`. Actual consumption varies with the current Codex model, transcript/context size, output, reasoning, and plan. Local and cloud Codex work may share rolling limits, and additional weekly limits may apply. Check remaining allowance with `/status` in an interactive Codex session or the usage dashboard linked from the official [Codex pricing and limits](https://learn.chatgpt.com/docs/pricing) page.
 
-Data-handling and retention follow the ChatGPT account/workspace used for `codex login`. Review those workspace policies before sending confidential transcripts.
+Data-handling and retention follow the ChatGPT account/workspace used for `codex login`. On a personal ChatGPT plan, turn off **Improve the model for everyone** before sending transcripts; OpenAI states that this account setting also applies to Codex tasks. The setup cannot inspect browser or account state, and `--ephemeral` controls local rollout persistence rather than provider training. See OpenAI's [Data Controls FAQ](https://help.openai.com/en/articles/7730893-data-controls-faq). Business, Enterprise, Edu, and future API-backed configurations must follow their own qualified workspace/account policy.
 
 ## Verification
 

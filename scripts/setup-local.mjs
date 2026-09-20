@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 const NODE_MAJOR_VERSION = 24;
 const PNPM_VERSION = "10.29.1";
 const MINIMUM_CODEX_VERSION = [0, 143, 0];
+const MINIMUM_MACOS_VERSION = [26, 0, 0];
+const MINIMUM_XCODE_VERSION = [26, 0, 0];
 const CONVEX_BACKEND_VERSION = "precompiled-2026-08-10-c0cb7ae";
 const CONVEX_URL = "http://127.0.0.1:3210";
 const CONVEX_SITE_URL = "http://127.0.0.1:3211";
@@ -476,9 +478,9 @@ async function validateHost() {
   const macOSVersion = (
     await runCheckedCaptured(swVers, ["-productVersion"], { label: "macOS version check" })
   ).stdout.trim();
-  const [macOSMajor] = parseVersion(macOSVersion, "macOS");
-  if (macOSMajor < 15) {
-    throw new SetupError(`macOS 15 or later is required (found ${macOSVersion}).`);
+  const parsedMacOSVersion = parseVersion(macOSVersion, "macOS");
+  if (!versionAtLeast(parsedMacOSVersion, MINIMUM_MACOS_VERSION)) {
+    throw new SetupError(`macOS 26.0 or later is required (found ${macOSVersion}).`);
   }
 
   const developerDirectory = (
@@ -499,7 +501,18 @@ async function validateHost() {
     );
   }
 
-  await runCheckedCaptured(xcodebuild, ["-version"], { label: "Xcode version check" });
+  const xcodeVersionResult = await runCheckedCaptured(xcodebuild, ["-version"], {
+    label: "Xcode version check",
+  });
+  const parsedXcodeVersion = parseVersion(
+    `${xcodeVersionResult.stdout}\n${xcodeVersionResult.stderr}`,
+    "Xcode"
+  );
+  if (!versionAtLeast(parsedXcodeVersion, MINIMUM_XCODE_VERSION)) {
+    throw new SetupError(
+      `Xcode 26.0 or later is required (found ${parsedXcodeVersion.join(".")}).`
+    );
+  }
   await runCheckedCaptured(xcodebuild, ["-checkFirstLaunchStatus"], {
     label: "Xcode first-launch check (open Xcode once if this fails)",
   });
